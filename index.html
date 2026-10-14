@@ -507,6 +507,13 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
     <p class="hint">Den Primärenergie- und CO₂-Faktor veröffentlicht der Fernwärmeversorger (Zertifikat nach AGFW FW 309). Gebäudenutzfläche = Wohnfläche × 1,2 (§ 82 GEG).</p>
   </section>
 
+  <section class="panel" id="bkP">
+    <h2>🛟 Sicherungen der Einstellungen</h2>
+    <p class="hint" style="margin-top:0">Änderungen werden automatisch gespeichert. Vor jedem Speichern sichert die App den bisherigen Stand (höchstens alle 10 Minuten, bei deutlich weniger Daten sofort) im Tabellenblatt „Sicherungen“. Hier kannst du einen älteren Stand zurückholen.</p>
+    <button class="btn sec" id="bkLoad">Sicherungen anzeigen</button>
+    <div id="bkList" style="margin-top:8px"></div>
+  </section>
+
   <section class="panel">
     <h2>Szenen</h2>
     <p class="hint" style="margin-top:0">Schnellknöpfe in der Übersicht, z.B. für Urlaub. Die vorherigen Einstellungen werden gemerkt und lassen sich mit einem Klick wiederherstellen.</p>
@@ -607,7 +614,7 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
 </section>
 
 <div class="savebar" id="saveBar" hidden>
-  <span>Ungespeicherte Änderungen</span>
+  <span>Wird automatisch gespeichert …</span>
   <button class="btn sec" id="discard">Verwerfen</button>
   <button class="btn" id="saveCfg">Speichern</button>
 </div>
@@ -745,7 +752,12 @@ const fmtDay = t => { const d = new Date(t); return pad(d.getDate()) + '.' + pad
 const dayKey = t => { const d = new Date(t); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); };
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const tempColor = t => t == null ? css('--mute') : t < 17 ? '#3b82f6' : t < 19.5 ? '#0ea5e9' : t < 23 ? '#10b981' : '#f97316';
-const heating = d => d.online && (d.valve != null ? d.valve > 0 : (d.set != null && d.temp != null && d.set > d.temp + 0.2));
+const heating = d => { if (!d.online) return false; if (!isThermo(d)) return false; const s2 = valveSrc(d);
+  if (s2 === 'valve') return d.valve > 0;
+  if (s2 === 'state') return d.heat === 1;
+  if (d.set != null && d.temp != null && d.set > d.temp + 0.2) return true;
+  const h = hist(d.id), a = h[h.length - 1], b = h.slice(0, -1).reverse().find(p => a && a[0] - p[0] >= 25 * 60e3);
+  return !!(a && b && Date.now() - a[0] < 2 * 36e5 && riseValve(a, b) > 0); };
 const rangeLabel = () => (RANGES.find(r => r[0] == S.range) || [0, ''])[1];
 const num = v => (v === '' || v == null || isNaN(+v)) ? null : +v;
 
@@ -868,7 +880,7 @@ function pnOf(c) {
   return wpm(c.type, +c.h) * (+c.w || 0) / 1000 * k;
 }
 /* ---------- Wetter (Open-Meteo) als Ersatz für den Außenfühler ---------- */
-const WX = { now: null, nowT: 0, daily: {}, dailyDays: 0, dailyT: 0, busy: false };
+const WX = { now: null, nowT: 0, daily: {}, sun: {}, dailyDays: 0, dailyT: 0, busy: false };
 async function ensureWeather() {
   const L = S.cfg && S.cfg.loc;
   if (!L || L.lat == null || L.lon == null || WX.busy) return;
@@ -886,8 +898,9 @@ async function ensureWeather() {
     }
     if (needDaily) {
       WX.dailyDays = days; WX.dailyT = Date.now();
-      const j = await (await fetch(base + `&daily=temperature_2m_mean&past_days=${Math.min(92, days)}&forecast_days=8`)).json();
+      const j = await (await fetch(base + `&daily=temperature_2m_mean&hourly=shortwave_radiation&past_days=${Math.min(92, days)}&forecast_days=8`)).json();
       j.daily.time.forEach((d, i) => { if (j.daily.temperature_2m_mean[i] != null) WX.daily[d] = j.daily.temperature_2m_mean[i]; });
+      if (j.hourly) j.hourly.time.forEach((h, i) => { if (j.hourly.shortwave_radiation[i] != null) WX.sun[h.slice(0, 13)] = j.hourly.shortwave_radiation[i]; });
       if (days > 92) {
         const iso = d => d.toISOString().slice(0, 10);
         const a = await (await fetch(`https://archive-api.open-meteo.com/v1/archive?latitude=${L.lat}&longitude=${L.lon}&timezone=Europe%2FBerlin&daily=temperature_2m_mean` +
@@ -1100,6 +1113,33 @@ function histAt(id, t, tol) {   // nächster Messwert (Ist-Temperatur) zur Zeit 
   return bd <= tol ? best : null;
 }
 
+/* Ventilöffnung: echte Werte vom Thermostat oder – wenn es keine brauchbaren liefert – aus Soll/Ist geschätzt */
+function valveSrc(d) {
+  const c = devCfg(d.id).valveSrc || 'auto';
+  if (c !== 'auto') return c;
+  let ok = d.valve != null;
+  if (ok) { const vs = hist(d.id).filter(p => p[3] != null).map(p => p[3]); if (vs.length >= 12 && Math.max(...vs) - Math.min(...vs) < 1) ok = false; }   // Prozentwert ändert sich nie → unbrauchbar
+  if (ok) return 'valve';
+  return d.heatSrc === 'state' ? 'state' : 'proxy';   // „offen/zu“ → Anteil der Zeit, in der das Ventil offen war
+}
+// Regelverhalten eines Thermostats nachgebildet: 1,5 K unter Soll ganz offen, am Soll ≈ ¼ offen, 0,5 K drüber zu
+const valveProxy = (set, temp) => set == null || temp == null ? null : Math.max(0, Math.min(100, (set + 0.5 - temp) * 50));
+// Sonne: Einstrahlung (W/m²) zur Stunde laut Wetterdienst
+const sunAt = t => { const d = new Date(t); return WX.sun[dayKey(t) + 'T' + pad(d.getHours())]; };
+// Temperatur steigt deutlich, ohne dass die Sonne scheint → der Heizkörper läuft
+function riseValve(p, prev) {
+  if (!prev || p[1] == null || prev[1] == null) return 0;
+  const h = (p[0] - prev[0]) / 36e5;
+  if (h <= 0 || h > 3) return 0;
+  const rate = (p[1] - prev[1]) / h;                  // K pro Stunde
+  if (rate < 0.15) return 0;
+  const sun = sunAt(p[0]);
+  if (sun != null && sun > 250) return 0;             // kräftige Sonne – Anstieg kann von draußen kommen
+  return Math.min(100, rate / 0.6 * 100);             // ab ca. 0,6 K/h: Heizkörper voll an
+}
+const valveOf = (src, p, prev) => src === 'proxy' ? Math.max(valveProxy(p[2], p[1]) || 0, riseValve(p, prev))
+  : src === 'state' ? (p[5] ? Math.min(100, (p[6] || 0) / p[5] * 100) : null) : p[3];
+
 function calcEnergy() {
   const res = { dev: {}, rooms: {}, days: {}, total: 0, series: [] };
   const t1 = Date.now(), t0 = t1 - S.range * 864e5;
@@ -1109,9 +1149,10 @@ function calcEnergy() {
     const c = devCfg(d.id);
     if (c.ignore) return;
     const pn = pnOf(c), n = +c.n || 1.3, room = (c.room || d.name).trim() || d.name;
-    const r = { id: d.id, name: d.name, room, pn, kwh: 0, heat: 0, hours: 0, vs: 0, vh: 0, ts: 0, th: 0 };
-    hist(d.id).forEach(p => {
-      const [t, temp, , valve, , hrs, hh] = p;
+    const src = valveSrc(d);
+    const r = { id: d.id, name: d.name, room, pn, kwh: 0, heat: 0, hours: 0, vs: 0, vh: 0, ts: 0, th: 0, src };
+    hist(d.id).forEach((p, i, arr) => {
+      const [t, temp, , , , hrs, hh] = p, valve = valveOf(src, p, arr[i - 1]);
       if (!hrs) return;
       r.hours += hrs; r.heat += hh || 0;
       if (temp != null) { r.ts += temp * hrs; r.th += hrs; }
@@ -1141,7 +1182,10 @@ function calcEnergy() {
       const meas = G.sens ? histAt(G.sens, t, step * 2) : null;
       let e = 0;
       G.parts.forEach(q => {
-        const Ti = meas != null ? meas : tiAt(q.P, t);   // Fühler im Raum, sonst Stellung des Thermostatkopfs zu dieser Zeit
+        const st = tiAt(q.P, t);                          // Stellung des Thermostatkopfs zu dieser Zeit
+        if (meas != null && meas > st + 0.5) return;      // Raum wärmer als eingestellt → Thermostatkopf hat zu
+        if (meas == null && st <= 12) return;             // Stufe 1 / Frostschutz: Wärme kommt aus den Nachbarräumen
+        const Ti = meas != null ? meas : st;
         if (Ti <= To) return;
         let W = q.H * (Ti - To);
         if (q.pn) { const dT = tmAt(t) - Ti; W = Math.min(W, dT > 0 ? q.pn * Math.pow(dT / 50, q.n) : 0); }
@@ -1399,14 +1443,33 @@ async function addTi(pid, t, v) {
   b.tiLog = (b.tiLog || []).filter(e => Math.abs(e[0] - t) >= 60e3).concat([[t, +v]]).sort((a, c) => a[0] - c[0]);
   return saveCfgNow('✓ Stellung ' + stufeTxt(v).replace(/ \(.*/, '') + ' ab ' + fmtTime(t, true) + ' gespeichert');
 }
+/* Einstellungen speichern – mit Versionsnummer, damit eine ältere Kopie nie neuere Daten überschreibt */
+async function pushCfg() {
+  if (S.cached) throw new Error('Die aktuellen Daten werden noch geladen – bitte kurz warten und dann noch einmal.');
+  const n = S.edits || 0;
+  const rev = await call('apiSaveConfig', S.cfg);
+  if (typeof rev === 'number') S.cfg._rev = rev;
+  S.data.config = JSON.parse(JSON.stringify(S.cfg));
+  if ((S.edits || 0) === n) { S.dirty = false; $('#saveBar').hidden = true; clearTimeout(S.asT); }
+  return true;
+}
+function saveErr(e) {
+  const m = String((e && e.message) || e);
+  if (/KONFLIKT/.test(m)) {
+    if (confirm(m.replace(/^.*KONFLIKT: /, '') + '\n\nJetzt neu laden? Deine letzte Änderung hier musst du danach noch einmal machen.')) { S.dirty = false; $('#saveBar').hidden = true; load(); }
+  } else toast('Fehler: ' + m);
+}
+async function autoSave() {
+  if (!S.dirty || S.saving) return;
+  S.saving = true;
+  try { await pushCfg(); toast('✓ Automatisch gespeichert'); }
+  catch (e) { saveErr(e); }
+  S.saving = false;
+  if (S.dirty) { clearTimeout(S.asT); S.asT = setTimeout(autoSave, 2500); }
+}
 async function saveCfgNow(msg) {
-  try {
-    await call('apiSaveConfig', S.cfg);
-    S.data.config = JSON.parse(JSON.stringify(S.cfg));
-    S.dirty = false; $('#saveBar').hidden = true;
-    S.en = calcEnergy(); toast(msg || '✓ Gespeichert');
-    return true;
-  } catch (e) { toast('Fehler: ' + e.message); return false; }
+  try { await pushCfg(); S.en = calcEnergy(); toast(msg || '✓ Gespeichert'); return true; }
+  catch (e) { saveErr(e); return false; }
 }
 
 /* Eine Kachel pro Raum: große Zahl = Fühler (Raumluft), darunter jedes Gerät als Zeile */
@@ -1439,7 +1502,9 @@ function roomCard(R) {
   const row = d => {
     const th = isThermo(d), det = [];
     if (th && d.set != null) det.push('Soll ' + fmt(d.set) + '°');
-    if (th && d.valve != null) det.push('Ventil ' + fmt(d.valve, 0) + ' %');
+    if (th && d.valve != null && valveSrc(d) === 'valve') det.push('Ventil ' + fmt(d.valve, 0) + ' %');
+    else if (th && valveSrc(d) === 'state') det.push('Ventil ' + (d.heat ? 'offen' : 'zu'));
+    else if (th && d.set != null && d.temp != null) det.push(heating(d) && valveProxy(d.set, d.temp) === 0 ? 'Temperatur steigt – heizt vermutlich' : 'Ventil ≈ ' + fmt(valveProxy(d.set, d.temp), 0) + ' % (geschätzt)');
     if (!th && d.hum != null) det.push(fmt(d.hum, 0) + ' %' + (d.temp != null ? ' · ' + fmt(absHum(d.temp, d.hum)) + ' g/m³' : ''));
     const e = th && S.en.dev[d.id];
     if (e && e.heat) det.push(fmt(e.heat) + ' h geheizt');
@@ -1449,7 +1514,7 @@ function roomCard(R) {
       <span class="rn"><span class="dot" style="background:${colorOf(d.id)}"></span><span class="rt">${esc(String(d.name).trim())}</span><small>${th ? 'Thermostat' : 'Fühler'}${d.online ? '' : ' · offline'}</small></span>
       <span class="rv">${d.temp != null ? fmt(d.temp) + '°' : '–'}</span>
       <span class="rd">${det.join(' · ')}</span>
-      ${th && d.valve != null ? `<span class="rbar"><i style="width:${Math.min(100, d.valve)}%"></i></span>` : ''}
+      ${th && (d.valve != null || d.set != null) ? `<span class="rbar"><i style="width:${Math.min(100, valveSrc(d) === 'valve' ? d.valve : valveSrc(d) === 'state' ? (d.heat ? 100 : 0) : (valveProxy(d.set, d.temp) || 0))}%"></i></span>` : ''}
     </button>`;
   };
   return `<div class="card room ${anyOn ? '' : 'off'}">
@@ -1838,11 +1903,11 @@ function renderTimeline() {
     }
   }
   ths.forEach((d, i) => {
-    const y = T + i * (rh + gap), nm = String(d.name).trim();
+    const y = T + i * (rh + gap), nm = String(d.name).trim(), src = valveSrc(d);
     svg += `<text x="0" y="${y + 13}">${esc(nm.length > 14 ? nm.slice(0, 13) + '…' : nm)}</text>`;
     svg += `<rect x="${lab}" y="${y}" width="${W - lab - 2}" height="${rh}" rx="4" fill="none" stroke="var(--line)"/>`;
-    hist(d.id).forEach(p => {
-      const [t, temp, set, valve, , hrs] = p;
+    hist(d.id).forEach((p, i, arr) => {
+      const [t, temp, set, , , hrs] = p, valve = valveOf(src, p, arr[i - 1]);
       if (!valve || !hrs) return;
       const a = X(t - hrs * 18e5), b = X(t + hrs * 18e5);
       svg += `<rect x="${a}" y="${y + 2}" width="${Math.max(1, b - a)}" height="${rh - 4}" fill="#ea580c" opacity="${(0.15 + 0.85 * valve / 100).toFixed(2)}"><title>${esc(nm)} ${fmtTime(t, S.range > 1)}: Ventil ${fmt(valve, 0)} %${temp != null ? ', ' + fmt(temp) + ' °C' : ''}${set != null ? ' (Soll ' + fmt(set) + ')' : ''}</title></rect>`;
@@ -2020,7 +2085,7 @@ function renderCheck() {
     if (warm.length) is.push(['🥵', 'Ventil zu, Raum trotzdem zu warm', `${warm.length}× mind. 3 h über 2 K wärmer als Soll bei geschlossenem Ventil. Entweder schließt das Ventil nicht ganz, oder die Wärme kommt von woanders (Sonne, Rohre, Nachbarräume).`]);
     const vs = h.filter(p => p[3] != null).map(p => p[3]);
     if (vs.length >= 20 && S.range >= 2 && Math.max(...vs) === Math.min(...vs) && h.some(p => p[2] != null && p[1] != null && p[2] > p[1] + 1))
-      is.push(['🔒', 'Ventil bewegt sich nicht', `Immer ${fmt(vs[0], 0)} %, obwohl es kälter war als Soll. Thermostat abnehmen, Ventilstift gängig machen, neu montieren.`]);
+      is.push(['🔒', 'Ventilwert ändert sich nie', `Immer ${fmt(vs[0], 0)} %, obwohl es kälter war als Soll. Entweder meldet das Thermostat die Ventilstellung nicht richtig (dann schätzt die App die Heizleistung aus Soll/Ist – siehe Einstellungen → Heizkörper), oder der Ventilstift klemmt.`]);
     const R = roomsList().find(x => x.th.includes(d)), sn = R && R.sens.find(x => hist(x.id).length);
     if (sn) {
       let sum = 0, n = 0;
@@ -2690,6 +2755,10 @@ function hkCard(d) {
       : `<div class="f3"><label>Höhe mm<input type="number" inputmode="numeric" data-k="h" value="${c.h ?? ''}"></label>
          <label>Breite mm<input type="number" inputmode="numeric" data-k="w" value="${c.w ?? ''}"></label>
          <label>Anzahl<input type="number" inputmode="numeric" data-k="count" value="${c.count ?? 1}"></label></div>`}
+    <label>Ventilöffnung<select data-k="valveSrc">
+      <option value="auto" ${!c.valveSrc || c.valveSrc === 'auto' ? 'selected' : ''}>automatisch – jetzt: ${{ valve: 'Prozentwert vom Thermostat', state: '„offen/zu“ vom Thermostat', proxy: 'aus Soll/Ist geschätzt' }[valveSrc(d)]}</option>
+      <option value="valve" ${c.valveSrc === 'valve' ? 'selected' : ''}>immer Wert vom Thermostat</option>
+      <option value="proxy" ${c.valveSrc === 'proxy' ? 'selected' : ''}>immer schätzen (Soll/Ist + Temperaturanstieg ohne Sonne)</option></select></label>
     <div class="f2"><label>Exponent n (Platte 1,3 · Bad 1,2)<input type="number" inputmode="decimal" step="0.05" data-k="n" value="${c.n ?? 1.3}"></label>
       <label class="ck" style="margin-top:20px"><input type="checkbox" data-k="ignore" ${c.ignore ? 'checked' : ''}> nicht berechnen</label></div>
     <div class="pn" data-pn>${pnText(d)}</div>
@@ -2703,7 +2772,10 @@ function pnText(d) {
   return `Normleistung ≈ <b>${fmt(pn, 0)} W</b>` + (now != null ? ` · jetzt voll offen ≈ ${fmt(now, 0)} W` : '');
 }
 
-function markDirty() { S.dirty = true; $('#saveBar').hidden = false; S.en = calcEnergy(); }
+function markDirty() {
+  S.dirty = true; S.edits = (S.edits || 0) + 1; $('#saveBar').hidden = false; S.en = calcEnergy();
+  clearTimeout(S.asT); S.asT = setTimeout(autoSave, 2000);   // automatisch speichern, sobald du kurz nichts änderst
+}
 
 /* ---------- Detail ---------- */
 let pend = null, pendTimer = null;
@@ -2905,16 +2977,16 @@ $('#dvList').addEventListener('click', async e => {
   if (e.target.id === 'togHid') { store.set('heizdash.showHidden', !store.get('heizdash.showHidden', false)); renderDevices(); return; }
   if (e.target.closest('[data-hidering]')) {
     S.cfg.hideRing = !S.cfg.hideRing;
-    try { await call('apiSaveConfig', S.cfg); S.data.config = JSON.parse(JSON.stringify(S.cfg)); toast(S.cfg.hideRing ? 'Klingel ausgeblendet' : 'Klingel eingeblendet'); }
-    catch (err) { S.cfg.hideRing = !S.cfg.hideRing; toast('Fehler: ' + err.message); }
+    try { await pushCfg(); toast(S.cfg.hideRing ? 'Klingel ausgeblendet' : 'Klingel eingeblendet'); }
+    catch (err) { S.cfg.hideRing = !S.cfg.hideRing; saveErr(err); }
     renderDevices(); return;
   }
   const h = e.target.closest('[data-hidedev]');
   if (h) {
     const c = S.cfg.devices[h.dataset.hidedev] || (S.cfg.devices[h.dataset.hidedev] = {});
     c.hidden = !c.hidden;
-    try { await call('apiSaveConfig', S.cfg); S.data.config = JSON.parse(JSON.stringify(S.cfg)); toast(c.hidden ? 'Ausgeblendet' : 'Eingeblendet'); }
-    catch (err) { c.hidden = !c.hidden; toast('Fehler: ' + err.message); }
+    try { await pushCfg(); toast(c.hidden ? 'Ausgeblendet' : 'Eingeblendet'); }
+    catch (err) { c.hidden = !c.hidden; saveErr(err); }
     renderDevices(); return;
   }
   const b = e.target.closest('[data-cmd]'); if (b) { sendCmd(b); return; }
@@ -3074,19 +3146,35 @@ $('#tab-hk').addEventListener('input', e => {
   }
   const card = t.closest('.hk'); if (!card || !t.dataset.k) return;
   const c = S.cfg.devices[card.dataset.id], k = t.dataset.k;
-  c[k] = k === 'ignore' ? t.checked : (k === 'room' || k === 'type') ? t.value : num(t.value);
+  c[k] = k === 'ignore' ? t.checked : (k === 'room' || k === 'type' || k === 'valveSrc') ? t.value : num(t.value);
   markDirty();
   if (k === 'type') { card.outerHTML = hkCard(S.data.devices.find(x => x.id === card.dataset.id)); return; }
   card.querySelector('[data-pn]').innerHTML = pnText(S.data.devices.find(x => x.id === card.dataset.id));
 });
 $('#tab-hk').addEventListener('change', e => { if (e.target.type === 'checkbox' || e.target.tagName === 'SELECT') e.target.dispatchEvent(new Event('input', { bubbles: true })); });
 $('#saveCfg').onclick = async () => {
-  try {
-    await call('apiSaveConfig', S.cfg);
-    S.data.config = JSON.parse(JSON.stringify(S.cfg));
-    S.dirty = false; toast('✓ Gespeichert'); render();
-  } catch (e) { toast('Fehler: ' + e.message); }
+  clearTimeout(S.asT);
+  try { await pushCfg(); toast('✓ Gespeichert'); render(); } catch (e) { saveErr(e); }
 };
+$('#bkLoad').onclick = async () => {
+  $('#bkList').innerHTML = '<div class="hint">wird geladen …</div>';
+  try {
+    let l = await call('apiConfigBackups'); if (typeof l === 'string') l = JSON.parse(l);
+    $('#bkList').innerHTML = l.length ? l.map(r => `<div class="man"><div><b>${new Date(r[0]).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })}</b>
+      <small>${r[2]} Räume mit Bauphysik · ${r[3]} Heizkörper · ${r[4] ? 'mit Preisen · ' : ''}${fmt(r[1] / 1000, 1)} k Zeichen</small></div>
+      <button class="btn sec" data-bk="${r[0]}" style="padding:8px 10px;font-size:13px">zurückholen</button></div>`).join('')
+      : '<div class="hint">Noch keine Sicherungen – sie entstehen ab jetzt bei jedem Speichern.</div>';
+  } catch (e) { $('#bkList').innerHTML = '<div class="hint">Fehler: ' + esc(e.message) + '</div>'; }
+};
+$('#bkList').addEventListener('click', async e => {
+  const b = e.target.closest('[data-bk]'); if (!b) return;
+  if (!confirm('Einstellungen vom ' + new Date(+b.dataset.bk).toLocaleString('de-DE') + ' zurückholen? Der jetzige Stand wird vorher gesichert.')) return;
+  try {
+    let c = await call('apiRestoreConfig', +b.dataset.bk); if (typeof c === 'string') c = JSON.parse(c);
+    S.data.config = c; S.cfg = normCfg(c); S.dirty = false; clearTimeout(S.asT); $('#saveBar').hidden = true;
+    toast('✓ Einstellungen zurückgeholt'); render(); renderHK();
+  } catch (err) { toast('Fehler: ' + err.message); }
+});
 $('#discard').onclick = () => { S.dirty = false; S.cfg = normCfg(S.data.config); render(); };
 
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => S.data && render());
@@ -3117,7 +3205,9 @@ const DS = {
 const DEMO = {
   apiData: days => demoData(days),
   apiRefresh: days => demoData(days),
-  apiSaveConfig: c => { DS.cfg = JSON.parse(JSON.stringify(c)); return true; },
+  apiSaveConfig: c => { if (DS.cfg._rev && c._rev !== DS.cfg._rev) throw new Error('KONFLIKT: Die Einstellungen wurden inzwischen an anderer Stelle geändert.'); const r = Date.now(); DS.cfg = JSON.parse(JSON.stringify(c)); DS.cfg._rev = r; return r; },
+  apiConfigBackups: () => [],
+  apiRestoreConfig: () => { throw new Error('In der Demo gibt es keine Sicherungen'); },
   apiSetTemp: (id, v) => { DS.set[id] = v; return v; },
   apiSetMode: (id, m) => { DS.mode[id] = m; return m; },
   apiCommand: (id, code, v) => {
@@ -3173,7 +3263,7 @@ function demoData(days) {
   const defs = [
     { id: 's0', name: 'Außen', out: 1 },
     { id: 's1', name: 'Ilse ', sensor: 1, base: 19.5 }, { id: 's2', name: 'Arbeitszimmer ', sensor: 1, base: 20.3 }, { id: 's3', name: 'Gästezimmer ', sensor: 1, base: 17.2 },
-    { id: 't1', name: 'Küche', set: 21, off: .3 }, { id: 't2', name: 'WZ Heizung 1', set: 21.5 },
+    { id: 't1', name: 'Küche', set: 21, off: .3 }, { id: 't2', name: 'WZ Heizung 1', set: 21.5, stuck: 1 },
     { id: 't3', name: 'WZ Heizung Klein', set: 21.5, off: -.3 }, { id: 't4', name: 'Bad', set: 23, night: 19 },
     { id: 't5', name: 'Ilse', set: 20.5 }, { id: 't6', name: 'Bad Ilse', set: 22, offline: 1 }, { id: 't7', name: 'Jutta', set: 20, bat: 14 }, { id: 't8', name: 'Arbeitszimmer', set: 17 }
   ];
@@ -3190,7 +3280,7 @@ function demoData(days) {
       const need = (set - temp) * 45 + (20 - out) * 1.5;
       const valve = Math.max(0, Math.min(100, Math.round(need + (rnd() - .5) * 10)));
       temp += (set + (d.off || 0) - temp) * Math.min(.6, .5 * hrs) + (rnd() - .5) * .25;
-      const pt = [t, r1(temp), set, valve, null, hrs, r1(hrs * Math.min(1, valve / 30))];
+      const pt = [t, r1(temp), set, d.stuck ? 0 : valve, null, hrs, r1(hrs * Math.min(1, valve / 30))];
       if (!last || !d.offline || t <= now - 2 * 864e5) last = pt;
       if (d.offline && t > now - 2 * 864e5) continue;
       h.push(pt);
@@ -3201,7 +3291,7 @@ function demoData(days) {
       devices.push({ id: d.id, name: d.name, online: true, temp: last[1], hum: last[4], bat: 90, raw: { va_temperature: Math.round(last[1] * 10), va_humidity: last[4], battery_state: 'high' } });
     } else {
       const mode = DS.mode[d.id] || 'manual';
-      devices.push({ id: d.id, name: d.name, online: !d.offline, temp: last[1], set: last[2], valve: last[3], bat, mode, window: false,
+      devices.push({ id: d.id, name: d.name, online: !d.offline, temp: last[1], set: last[2], valve: last[3], bat, mode, window: false, heatSrc: d.stuck ? 'state' : 'valve', heat: last[6] > 0 ? 1 : 0,
         setCode: 'temp_set', modeCode: 'mode',
         raw: { temp_current: Math.round(last[1] * 10), temp_set: Math.round(last[2] * 10), valve_percent: last[3], mode, battery_percentage: bat, child_lock: false, window_check: true, window_state: 'close' } });
       spec[d.id] = { set: { scale: 1, min: 50, max: 300, step: 5 }, mode: { range: ['auto', 'manual', 'holiday'] } };
@@ -3230,7 +3320,7 @@ function demoData(days) {
 load();
 </script>
 <script>
-window.APP_VERSION = 'heizung-v3';
+window.APP_VERSION = 'heizung-v8';
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
   let reloaded = false;
