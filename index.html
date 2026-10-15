@@ -363,6 +363,13 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
     <div class="cb sm"><canvas id="enRooms"></canvas></div>
     <table id="enTable"></table>
   </section>
+  <section class="panel" id="cmpP">
+    <h2>⚖️ Vergleich: Ventil-Rechnung ↔ Bauphysik</h2>
+    <div class="sum" id="cmpSum" style="margin-top:0"></div>
+    <div class="cb sm" id="cmpBox"><canvas id="cmpChart"></canvas></div>
+    <div class="tw"><table id="cmpTable"></table></div>
+    <p class="hint" id="cmpNote"></p>
+  </section>
   <section class="panel" id="enDailyP">
     <h2>Verbrauch pro Tag</h2>
     <div class="cb"><canvas id="enDaily"></canvas></div>
@@ -1133,6 +1140,10 @@ function riseValve(p, prev) {
   if (h <= 0 || h > 3) return 0;
   const rate = (p[1] - prev[1]) / h;                  // K pro Stunde
   if (rate < 0.15) return 0;
+  // Ein Thermostat öffnet nur, wenn es unter (oder knapp am) Sollwert ist. Liegt der Raum deutlich darüber,
+  // ist das Ventil zu – ein Anstieg kommt dann von woanders (Nachbarräume, Auskühlen nach dem Lüften, Kochen …)
+  const set = p[2] != null ? p[2] : prev[2];
+  if (set != null && prev[1] > set + 0.5) return 0;
   const sun = sunAt(p[0]);
   if (sun != null && sun > 250) return 0;             // kräftige Sonne – Anstieg kann von draußen kommen
   return Math.min(100, rate / 0.6 * 100);             // ab ca. 0,6 K/h: Heizkörper voll an
@@ -1154,7 +1165,7 @@ function calcEnergy() {
     hist(d.id).forEach((p, i, arr) => {
       const [t, temp, , , , hrs, hh] = p, valve = valveOf(src, p, arr[i - 1]);
       if (!hrs) return;
-      r.hours += hrs; r.heat += hh || 0;
+      r.hours += hrs; r.heat += src === 'valve' ? (hh || 0) : (valve != null && valve >= 10 ? hrs : 0);   // ohne Ventilmeldung: Stunden mit ≥ 10 % Öffnung
       if (temp != null) { r.ts += temp * hrs; r.th += hrs; }
       if (valve == null) return;
       r.vs += valve * hrs; r.vh += hrs;
@@ -1214,7 +1225,29 @@ function calcEnergy() {
     const c = store.get(K.calib, null); if (c && c.f) { res.factor = c.f; res.factorOld = true; }
   }
   res.k = res.sum != null && res.total > 0 ? res.sum / res.total : (res.factor || 1);
+  // Unabhängige Gegenrechnung: Wärmeverlust nach Bauphysik (H · (innen − außen)) für jeden Raum mit Angaben
+  res.loss = {};
+  [...new Set(PLAN.map(bpName))].forEach(n => { const L = physLoss(n); if (L) res.loss[n] = L; });
   return res;
+}
+
+/* Wärmeverlust eines Raums nach Bauphysik im gewählten Zeitraum – mit gemessener Raumtemperatur */
+function physLoss(name) {
+  const parts = PLAN.filter(P => bpName(P) === name && bpCfg(P).heat !== 'off' && bpH(P).has);
+  if (!parts.length) return null;
+  const H = parts.reduce((a, P) => a + bpH(P).H, 0), A = parts.reduce((a, P) => a + P.a, 0);
+  const R = roomsList().find(x => x.name === name);
+  const devs = R ? (R.sens.length ? R.sens : R.th) : [];
+  const step = S.range <= 2 ? 36e5 : S.range <= 30 ? 3 * 36e5 : 864e5, t1 = Date.now(), t0 = t1 - S.range * 864e5;
+  let kwh = 0, n = 0, ti = 0;
+  for (let t = t0 + step / 2; t < t1; t += step) {
+    const To = outsideAt(t); if (To == null) continue;
+    const vs = devs.map(d => histAt(d.id, t, step * 2)).filter(v => v != null);
+    const Ti = vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : tiAt(parts[0], t);
+    if (vs.length) { ti += Ti; n++; }
+    if (Ti > To) kwh += H * (Ti - To) * step / 36e5 / 1000;
+  }
+  return { kwh, H, A, measured: n > 0, ti: n ? ti / n : null };
 }
 
 /* ---------- Wärmezähler: Ablesungen [Zeit, kWh, VL, RL, Außen, Notiz] ---------- */
@@ -1562,7 +1595,7 @@ function baseOpts() {
     scales: {
       x: { type: 'linear', min: now - S.range * 864e5, max: now, grid: { color: css('--line') },
            ticks: { color: css('--mute'), maxTicksLimit: 6, maxRotation: 0, callback: v => S.range > 3 ? fmtDay(v) : fmtTime(v, long) } },
-      y: { grid: { color: css('--line') }, ticks: { color: css('--mute'), callback: v => fmt(v, 0) + '°' } }
+      y: { grid: { color: css('--line') }, ticks: { color: css('--mute'), callback: v => fmt(v, Math.abs(v - Math.round(v)) < 0.01 ? 0 : 1) + '°' } }
     }
   };
 }
@@ -1620,6 +1653,7 @@ function renderEnergy() {
     (rooms.some(r => r.phys) ? '<tr><td colspan="9" class="hint">📐 = ohne Smart-Thermostat, berechnet aus Bauphysik-Angaben</td></tr>' : '');
 
   renderHGT();
+  renderCompare();
   const days = Object.keys(E.days).sort();
   $('#enDailyP').hidden = S.range < 3 || !days.length;
   if (S.range >= 3 && days.length) {
@@ -1710,6 +1744,46 @@ function renderForecast() {
   $('#fcNote').innerHTML = `Aus der Wettervorhersage und deinem Kennwert <b>${fmt(kg.v, 1)} kWh je Gradtag</b> (${kg.src === 'meter' ? 'gemessen mit dem Wärmezähler' : 'geschätzt aus den Thermostaten'}). ` +
     `Normjahr = langjähriges Mittel ${fmt(gLong(), 0)} Gradtage${LT.data ? ' (Wetter ' + (S.cfg.loc.name || '') + ' 2001–2020)' : ' (Näherung, Wetterarchiv nicht erreichbar)'}.` +
     (c7 != null ? ` Nächste Tage ≈ ${eur(c7)} Arbeitspreis.` : ' Mit Arbeitspreis (Einstellungen → Kosten) siehst du auch Euro.');
+}
+
+/* ---------- Vergleich Ventil-Rechnung ↔ Bauphysik ---------- */
+function renderCompare() {
+  const E = S.en, k = E.k;
+  const names = [...new Set(Object.keys(E.rooms).concat(Object.keys(E.loss)))];
+  const rows = names.map(n => ({ n, v: E.rooms[n] ? E.rooms[n].kwh * k : null, l: E.loss[n] ? E.loss[n].kwh : null, phys: E.rooms[n] && E.rooms[n].phys }))
+    .filter(r => (r.v || 0) + (r.l || 0) > 0.05).sort((a, b) => ((b.l || 0) + (b.v || 0)) - ((a.l || 0) + (a.v || 0)));
+  $('#cmpP').hidden = !Object.keys(E.loss).length;
+  if (!Object.keys(E.loss).length) return;
+  const both = rows.filter(r => r.v != null && r.l != null && !r.phys);
+  const sv = both.reduce((a, r) => a + r.v, 0), sl = both.reduce((a, r) => a + r.l, 0);
+  const lossAll = Object.values(E.loss).reduce((a, L) => a + L.kwh, 0);
+  $('#cmpSum').innerHTML = [
+    [fmt(E.sum != null ? E.sum : E.total * k, 0), E.sum != null ? 'kWh Zähler' : 'kWh Ventil-Rechn.'],
+    [fmt(lossAll, 0), 'kWh Verlust Bauphysik'],
+    [sl ? fmt(sv / sl * 100, 0) + ' %' : '–', 'Ventil ÷ Verlust'],
+    [Object.keys(E.loss).length, 'Räume mit Angaben']
+  ].map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join('');
+  mk('cmpChart', { type: 'bar',
+    data: { labels: rows.map(r => r.n), datasets: [
+      { label: 'Ventil-Rechnung', data: rows.map(r => r.phys ? null : r.v), backgroundColor: '#f97316', borderRadius: 4, barPercentage: .9, categoryPercentage: .7 },
+      { label: 'Wärmeverlust Bauphysik', data: rows.map(r => r.l), backgroundColor: '#64748b', borderRadius: 4, barPercentage: .9, categoryPercentage: .7 }] },
+    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: { legend: { display: true, labels: { color: css('--mute'), boxWidth: 10, font: { size: 11 } } }, tooltip: { callbacks: { label: it => ' ' + it.dataset.label + ': ' + fmt(it.parsed.x, 1) + ' kWh' } } },
+      scales: { x: { grid: { color: css('--line') }, ticks: { color: css('--mute') }, title: { display: true, text: 'kWh · ' + rangeLabel(), color: css('--mute') } }, y: { grid: { display: false }, ticks: { color: css('--ink') } } } } });
+  $('#cmpBox').style.height = Math.max(160, rows.length * 38 + 60) + 'px';
+  const verdict = r => {
+    if (r.phys) return '<span style="color:var(--mute)">nur Bauphysik</span>';
+    if (r.l == null) return '<span style="color:var(--mute)">keine Bauphysik</span>';
+    if (r.v == null) return '–';
+    const q = r.l > 0.3 ? r.v / r.l : null;
+    if (q == null) return '–';
+    return q < 0.5 ? '⬇️ Ventil-Rechnung viel kleiner' : q > 1.6 ? '⬆️ Ventil-Rechnung viel größer' : '✅ passt';
+  };
+  $('#cmpTable').innerHTML = '<tr><th>Raum</th><th class="n">Ventil</th><th class="n">Verlust</th><th class="n">Ø innen</th><th>Bewertung</th></tr>' +
+    rows.map(r => `<tr><td>${esc(r.n)}</td><td class="n">${r.phys ? '–' : fmt(r.v, 1)}</td><td class="n">${r.l != null ? fmt(r.l, 1) : '–'}</td>
+      <td class="n">${E.loss[r.n] && E.loss[r.n].ti != null ? fmt(E.loss[r.n].ti) + '°' : '–'}</td><td>${verdict(r)}</td></tr>`).join('');
+  $('#cmpNote').innerHTML = '<b>Ventil-Rechnung:</b> Heizkörperleistung × Ventilöffnung × Zeit (kalibriert am Zähler). <b>Bauphysik:</b> was laut Wänden, Fenstern und Lüftung bei der gemessenen Raum- und Außentemperatur verloren geht – ganz unabhängig von den Thermostaten. ' +
+    'Der Verlust ist meist etwas höher, weil Sonne, Personen, Geräte und Nachbarwohnungen mitheizen. Große Abweichungen zeigen, wo etwas nicht stimmt: Heizkörpergröße, Ventilschätzung oder Bauphysik-Angaben. Räume ohne Angaben unter Einstellungen → Bauphysik ergänzen.';
 }
 
 /* ---------- Wärmezähler-Panel ---------- */
@@ -2807,7 +2881,8 @@ function detail(id) {
   const win = d.window == null ? null : (d.window === true || d.window === 'open') ? 'offen' : 'zu';
   $('#dKv').innerHTML = [
     ['Ist', fmt(d.temp) + ' °C'], ['Soll', d.set != null ? fmt(d.set) + ' °C' : null],
-    ['Ventil', d.valve != null ? fmt(d.valve, 0) + ' %' : null], ['Feuchte', d.hum != null ? fmt(d.hum, 0) + ' %' : null],
+    ['Ventil', !isThermo(d) ? null : { valve: d.valve != null ? fmt(d.valve, 0) + ' %' : null, state: d.heat ? 'offen' : 'zu',
+      proxy: d.set != null && d.temp != null ? '≈ ' + fmt(valveProxy(d.set, d.temp), 0) + ' % (geschätzt)' : null }[valveSrc(d)]], ['Feuchte', d.hum != null ? fmt(d.hum, 0) + ' %' : null],
     ['Abs. Feuchte', d.hum != null && d.temp != null ? fmt(absHum(d.temp, d.hum)) + ' g/m³' : null],
     ['Taupunkt', d.hum != null && d.temp != null ? fmt(dewPoint(d.temp, d.hum)) + ' °C' : null],
     ['Akku', d.bat != null ? fmt(d.bat, 0) + ' %' : null], ['Modus', d.mode], ['Fenster', win],
@@ -2823,6 +2898,8 @@ function detail(id) {
     if (e.vh) st.push(['Ventil Ø', fmt(e.vs / e.vh, 0) + ' %']);
     st.push(['Heizstunden', fmt(e.heat)]);
     st.push(['Energie', fmt(e.kwh * S.en.k) + ' kWh']);
+    const L = S.en.loss[roomOf(d)];
+    if (L) st.push(['Verlust Raum (Bauphysik)', fmt(L.kwh) + ' kWh']);
   }
   $('#dStats').innerHTML = st.map(([k, v]) => `<div><span>${k} (${rangeLabel()})</span><b>${v}</b></div>`).join('');
   $('#dRaw').innerHTML = Object.entries(d.raw || {}).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</td></tr>`).join('') || '<tr><td>–</td></tr>';
@@ -2830,8 +2907,12 @@ function detail(id) {
   const cl = colorOf(id), pts = i => h.filter(p => p[i] != null).map(p => ({ x: p[0], y: p[i] }));
   const ds = [{ label: 'Ist', borderColor: cl, backgroundColor: cl, data: pts(1), spanGaps: gap(), yAxisID: 'y' }];
   if (pts(2).length) ds.push({ label: 'Soll', borderColor: css('--mute'), borderDash: [5, 4], borderWidth: 1.5, stepped: true, tension: 0, data: pts(2), spanGaps: gap(), yAxisID: 'y' });
-  const right = pts(3).length ? 3 : pts(4).length ? 4 : 0;
-  if (right) ds.push({ label: right === 3 ? 'Ventil' : 'Feuchte', unit: '%', borderColor: right === 3 ? '#f9731688' : '#3b82f688', backgroundColor: right === 3 ? '#f9731622' : '#3b82f622', fill: true, borderWidth: 1, data: pts(right), spanGaps: gap(), yAxisID: 'y1' });
+  const src = isThermo(d) ? valveSrc(d) : null;
+  if (src) h.forEach((p, i) => { p.v = valveOf(src, p, h[i - 1]); });   // wirksame Ventilöffnung (gemeldet, offen-Anteil oder geschätzt)
+  const vpts = src ? h.filter(p => p.v != null).map(p => ({ x: p[0], y: Math.round(p.v) })) : [];
+  const right = vpts.length ? 3 : pts(4).length ? 4 : 0;
+  const vLabel = { valve: 'Ventil', state: 'Ventil offen (Anteil)', proxy: 'Ventil (geschätzt)' }[src] || 'Ventil';
+  if (right) ds.push({ label: right === 3 ? vLabel : 'Feuchte', unit: '%', borderColor: right === 3 ? '#f9731688' : '#3b82f688', backgroundColor: right === 3 ? '#f9731622' : '#3b82f622', fill: true, borderWidth: 1, data: right === 3 ? vpts : pts(right), spanGaps: gap(), yAxisID: 'y1' });
   const o = baseOpts();
   o.plugins.legend = { display: true, labels: { color: css('--mute'), boxWidth: 12, font: { size: 11 } } };
   if (right) o.scales.y1 = { position: 'right', min: 0, max: 100, grid: { display: false }, ticks: { color: css('--mute'), callback: v => v + '%' } };
@@ -3320,7 +3401,7 @@ function demoData(days) {
 load();
 </script>
 <script>
-window.APP_VERSION = 'heizung-v8';
+window.APP_VERSION = 'heizung-v12';
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
   let reloaded = false;
