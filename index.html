@@ -235,6 +235,8 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
 #wall .wr small{display:block;color:var(--mute);font-size:14px;margin-top:2px}
 #wall .wf{display:flex;gap:16px;flex-wrap:wrap;font-size:16px;color:var(--mute)}
 #wall .wx{position:fixed;top:12px;right:12px}
+#plan .we{stroke-linecap:round;cursor:pointer}
+#plan .wh{stroke:transparent;stroke-width:16;cursor:pointer}
 .pm{display:grid;grid-template-columns:34px 1fr 74px;gap:6px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line);font-size:13px}
 .pm b{font-size:12px;background:var(--chip);border-radius:6px;text-align:center;padding:4px 0}
 .pm small{display:block;color:var(--mute);font-size:11px}
@@ -387,6 +389,11 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
 <section id="tab-an" hidden>
   <div class="seg rangeSeg" style="margin-top:10px"></div>
   <section class="pass" id="passCard"></section>
+  <section class="panel" id="mouldP">
+    <h2>🍄 Schimmel-Überwachung</h2>
+    <div id="mouldList"></div>
+    <p class="hint">Feuchte an der Oberfläche: Wasser in der Raumluft im Verhältnis zur Sättigung bei der Wandtemperatur. Ab 80 % über viele Stunden kann Schimmel wachsen, bei 100 % bildet sich Tauwasser. Wände: berechnet aus ihrem Aufbau (Ecke/hinter Möbeln, DIN 4108-2). 📍 Messstellen: aus deiner IR-Messung – das ist am genauesten. Braucht einen Fühler mit Luftfeuchte im Raum.</p>
+  </section>
   <section class="panel">
     <h2>🗓️ Verbrauchskalender</h2>
     <div class="tw" id="hmBox"></div>
@@ -434,6 +441,17 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
 <section id="tab-pl" hidden>
   <div class="seg" id="plMode" style="margin-top:10px">
     <button data-m="temp">🌡️ Temp.</button><button data-m="hum">💧 Feuchte</button><button data-m="mould">🍄 Wand</button><button data-m="heat">🔥 Heizen</button><button data-m="kwh">⚡ kWh/m²</button>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+    <button class="btn sec" id="plEdit" style="padding:8px 12px;font-size:14px">✏️ Wände &amp; Fenster</button>
+    <button class="btn sec" id="plSpot" style="padding:8px 12px;font-size:14px">📍 Messstelle</button>
+    <span class="hint" id="plEditInfo" style="margin:0"></span></div>
+  <div class="panel" id="plEditBox" hidden style="margin-top:0">
+    <div class="f2" style="align-items:end">
+      <label>Oben im Plan zeigt nach (°)<input type="number" inputmode="numeric" step="1" id="northIn" placeholder="0 = Norden"></label>
+      <div class="hint" style="margin-bottom:10px">0 = N · 90 = O · 180 = S · 270 = W</div></div>
+    <p class="hint" style="margin:0">Tipp: In Google Maps (Satellit) nachsehen, wohin die Straßenseite zeigt. Dann jede Wand antippen und ihre Art wählen. Außenwände bekommen ihre Fenster mit Verschattung. Die Himmelsrichtung jeder Wand rechnet die App selbst aus.</p>
+    <div class="leg" id="wLeg"></div>
   </div>
   <section class="panel" style="margin-top:0;padding:8px">
     <svg id="plan" viewBox="805 25 575 995" preserveAspectRatio="xMidYMid meet"></svg>
@@ -679,6 +697,32 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
   </div>
 </dialog>
 
+<dialog id="wallDlg">
+  <div class="dh"><h3 id="wdTitle">Wand</h3><button class="ib" data-close>✕</button></div>
+  <div class="db">
+    <div class="pn" id="wdInfo" style="margin-bottom:10px"></div>
+    <label>Art der Wand<select id="wdType"></select></label>
+    <div id="wdBuild"><label>Aufbau dieser Wand<select id="wdU"></select></label>
+      <label id="wdUoL">U-Wert W/m²K<input type="number" inputmode="decimal" step="0.05" id="wdUo"></label></div>
+    <div id="wdWin">
+      <div class="f2"><label>Fensterfläche in dieser Wand (m²)<input type="number" inputmode="decimal" step="0.1" id="wdWinA" placeholder="0"></label>
+        <label>Verschattung<select id="wdSh"></select></label></div>
+      <p class="hint" style="margin-top:0">Fensterfläche inkl. Rahmen, alle Fenster dieser Wand zusammen. Verschattung: frei = freie Sicht zum Himmel · teilweise = Bäume/Balkon darüber · stark = dicht vor Bäumen oder Nachbarhaus.</p>
+    </div>
+    <p style="display:flex;gap:8px"><button class="btn" id="wdSave">Übernehmen</button><button class="btn sec" data-close>Abbrechen</button></p>
+  </div>
+</dialog>
+<dialog id="spotDlg">
+  <div class="dh"><h3 id="spTitle">Messstelle</h3><button class="ib" data-close>✕</button></div>
+  <div class="db">
+    <label>Name<input id="spName" placeholder="z.B. Ecke am Balkon-Träger"></label>
+    <div class="f2"><label>Gemessene Oberflächentemperatur °C<input type="number" inputmode="decimal" step="0.1" id="spTs"></label>
+      <label>gemessen am<input type="datetime-local" id="spT"></label></div>
+    <p class="hint" style="margin-top:0">Mit einem IR-Thermometer direkt auf die Stelle messen – am besten an einem kalten Tag (draußen mind. 10 K kälter als drinnen). Die App nimmt Innen- und Außentemperatur zu diesem Zeitpunkt dazu.</p>
+    <div class="pn" id="spInfo"></div>
+    <p style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"><button class="btn" id="spSave">Speichern</button><button class="btn sec" id="spDel">Löschen</button><button class="btn sec" data-close>Abbrechen</button></p>
+  </div>
+</dialog>
 <div id="toast"></div>
 <div id="wall" hidden></div>
 
@@ -759,7 +803,11 @@ const fmtDay = t => { const d = new Date(t); return pad(d.getDate()) + '.' + pad
 const dayKey = t => { const d = new Date(t); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); };
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const tempColor = t => t == null ? css('--mute') : t < 17 ? '#3b82f6' : t < 19.5 ? '#0ea5e9' : t < 23 ? '#10b981' : '#f97316';
-const heating = d => { if (!d.online) return false; if (!isThermo(d)) return false; const s2 = valveSrc(d);
+const balNow = name => { const B = S.en && S.en.bal && S.en.bal[name]; if (!B || !B.line.length) return null;
+  const l = B.line[B.line.length - 1]; return Date.now() - l[0] < 2 * 36e5 ? l : null; };
+const heating = d => { if (!d.online) return false; if (!isThermo(d)) return false;
+  const bn = balNow(roomOf(d)); if (bn) return bn[1] > 0 && bn[2] !== 'air';
+  const s2 = valveSrc(d);
   if (s2 === 'valve') return d.valve > 0;
   if (s2 === 'state') return d.heat === 1;
   if (d.set != null && d.temp != null && d.set > d.temp + 0.2) return true;
@@ -887,7 +935,7 @@ function pnOf(c) {
   return wpm(c.type, +c.h) * (+c.w || 0) / 1000 * k;
 }
 /* ---------- Wetter (Open-Meteo) als Ersatz für den Außenfühler ---------- */
-const WX = { now: null, nowT: 0, daily: {}, sun: {}, dailyDays: 0, dailyT: 0, busy: false };
+const WX = { now: null, nowT: 0, daily: {}, sun: {}, gti: { N: {}, E: {}, S: {}, W: {} }, dailyDays: 0, dailyT: 0, busy: false };
 async function ensureWeather() {
   const L = S.cfg && S.cfg.loc;
   if (!L || L.lat == null || L.lon == null || WX.busy) return;
@@ -908,6 +956,13 @@ async function ensureWeather() {
       const j = await (await fetch(base + `&daily=temperature_2m_mean&hourly=shortwave_radiation&past_days=${Math.min(92, days)}&forecast_days=8`)).json();
       j.daily.time.forEach((d, i) => { if (j.daily.temperature_2m_mean[i] != null) WX.daily[d] = j.daily.temperature_2m_mean[i]; });
       if (j.hourly) j.hourly.time.forEach((h, i) => { if (j.hourly.shortwave_radiation[i] != null) WX.sun[h.slice(0, 13)] = j.hourly.shortwave_radiation[i]; });
+      // Einstrahlung auf senkrechte Wände je Himmelsrichtung (Open-Meteo: Azimut 0 = Süd, −90 = Ost, 90 = West, 180 = Nord)
+      for (const [k, az] of [['S', 0], ['E', -90], ['W', 90], ['N', 180]]) {
+        try {
+          const g = await (await fetch(base + `&hourly=global_tilted_irradiance&tilt=90&azimuth=${az}&past_days=${Math.min(92, days)}&forecast_days=2`)).json();
+          if (g.hourly && g.hourly.global_tilted_irradiance) g.hourly.time.forEach((h, i) => { const v = g.hourly.global_tilted_irradiance[i]; if (v != null) WX.gti[k][h.slice(0, 13)] = v; });
+        } catch (e) {}
+      }
       if (days > 92) {
         const iso = d => d.toISOString().slice(0, 10);
         const a = await (await fetch(`https://archive-api.open-meteo.com/v1/archive?latitude=${L.lat}&longitude=${L.lon}&timezone=Europe%2FBerlin&daily=temperature_2m_mean` +
@@ -1155,12 +1210,15 @@ function calcEnergy() {
   const res = { dev: {}, rooms: {}, days: {}, total: 0, series: [] };
   const t1 = Date.now(), t0 = t1 - S.range * 864e5;
   const addDay = (t, room, e) => { const dd = res.days[dayKey(t)] || (res.days[dayKey(t)] = {}); dd[room] = (dd[room] || 0) + e; };
-  // 1) Räume mit Smart-Thermostat: aus Ventilöffnung
+  // 0) Räume mit Bauphysik-Angaben und Temperaturmessung: Wärmebilanz
+  res.bal = {};
+  roomsList().filter(R => !R.out).forEach(R => { const bp = roomBP(R.name); if (!bp) return; const B = balanceRoom(R, bp); if (B) res.bal[R.name] = B; });
+  // 1) übrige Räume mit Smart-Thermostat: aus Ventilöffnung
   thermos().forEach(d => {
     const c = devCfg(d.id);
     if (c.ignore) return;
     const pn = pnOf(c), n = +c.n || 1.3, room = (c.room || d.name).trim() || d.name;
-    const src = valveSrc(d);
+    const src = valveSrc(d), viaBal = !!res.bal[room];
     const r = { id: d.id, name: d.name, room, pn, kwh: 0, heat: 0, hours: 0, vs: 0, vh: 0, ts: 0, th: 0, src };
     hist(d.id).forEach((p, i, arr) => {
       const [t, temp, , , , hrs, hh] = p, valve = valveOf(src, p, arr[i - 1]);
@@ -1169,7 +1227,7 @@ function calcEnergy() {
       if (temp != null) { r.ts += temp * hrs; r.th += hrs; }
       if (valve == null) return;
       r.vs += valve * hrs; r.vh += hrs;
-      if (temp == null || !pn) return;
+      if (viaBal || temp == null || !pn) return;   // Raum wird über die Wärmebilanz gerechnet
       const dT = tmAt(t) - temp;
       if (dT <= 0) return;
       const e = pn * Math.pow(dT / 50, n) * valve / 100 * hrs / 1000;
@@ -1177,15 +1235,26 @@ function calcEnergy() {
       res.series.push([t, e]);
       addDay(t, room, e);
     });
+    if (viaBal) { const B = res.bal[room]; r.heat = B.heatH; r.bal = true; r.share = pn; }
     res.dev[d.id] = r;
     const R = res.rooms[room] || (res.rooms[room] = { room, kwh: 0, heat: 0, pn: 0, n: 0, devs: [] });
     R.kwh += r.kwh; R.heat = Math.max(R.heat, r.heat); R.pn += pn; R.devs.push(d.name);
     res.total += r.kwh;
   });
+  Object.values(res.bal).forEach(B => {
+    const R = res.rooms[B.name] || (res.rooms[B.name] = { room: B.name, kwh: 0, heat: 0, pn: 0, n: 0, devs: [] });
+    R.kwh += B.kwh; R.heat = B.heatH; R.bal = B; R.pn = R.pn || B.pn;
+    B.line.forEach(([t, W, st, e]) => { if (e > 0) { res.series.push([t, e]); addDay(t, B.name, e); } });
+    res.total += B.kwh;
+    // auf die Thermostate des Raums verteilen (für die Detailansicht)
+    const devs = Object.values(res.dev).filter(r => r.room === B.name && r.bal), sp = devs.reduce((a, r) => a + (r.share || 0), 0);
+    devs.forEach(r => { r.kwh = sp ? B.kwh * r.share / sp : B.kwh / devs.length; });
+  });
   // 2) Räume ohne Smart-Thermostat: aus Bauphysik (H · (innen − außen))
   const limit = num(S.cfg.bp && S.cfg.bp.limit) ?? 15;
   const step = S.range <= 2 ? 36e5 : S.range <= 30 ? 3 * 36e5 : 864e5;
   physRooms().forEach(G => {
+    if (res.bal[G.name]) return;   // schon über die Wärmebilanz mit Messwerten gerechnet
     const R = res.rooms[G.name] || (res.rooms[G.name] = { room: G.name, kwh: 0, heat: 0, pn: 0, n: 0, devs: [], phys: true });
     R.pn += G.pn; R.H = G.H;
     for (let t = t0 + step / 2; t < t1; t += step) {
@@ -1312,11 +1381,15 @@ function bpCfg(P) { const b = Object.assign({}, BP_DEF, (planCfg(P.id).bp) || {}
 const uOf = (tbl, key, own) => key === 'own' ? (num(own) || 0) : (tbl[key] ? tbl[key][1] : 0);
 function bpH(P) {
   const b = bpCfg(P), V = P.a * (num(planCfg(P.id).h) || num(S.cfg.planH) || 3);
-  const ext = num(b.ext) || 0, win = num(b.win) || 0, unh = num(b.unh) || 0;
-  const HT = ext * (uOf(WALLS, b.wallT, b.wallU) + WB) + win * (uOf(WINS, b.winT, b.winU) + WB) + unh * uOf(UNH, b.unhT, b.unhU) * FX_UNH;
-  const has = ext + win + unh > 0;
+  let ext = num(b.ext) || 0, win = num(b.win) || 0, unh = num(b.unh) || 0, nb = 0, tr = 0;
+  const fromPlan = wallsDefined(P), Uw = uOf(WALLS, b.wallT, b.wallU);
+  let extHT = ext * (Uw + WB), nbHT = 0;
+  if (fromPlan) { const w = wallSums(P); ext = w.ext; win = w.win; nb = w.nb; tr = w.tr; extHT = w.extHT; nbHT = w.nbHT; }   // je Wand eigener Aufbau
+  const HT = extHT + win * (uOf(WINS, b.winT, b.winU) + WB) + unh * uOf(UNH, b.unhT, b.unhU) * FX_UNH
+    + tr * 1.5 * FX_UNH + nbHT;   // Treppenhaus halb so kalt wie außen; Nachbarhaus ist meist beheizt
+  const has = ext + win + unh + tr + nb > 0;
   const HV = has ? 0.34 * (num(b.n) ?? 0.5) * V : 0;
-  return { HT, HV, H: HT + HV, V, has };
+  return { HT, HV, H: HT + HV, V, has, ext, win, nb, tr, fromPlan };
 }
 function trvRooms() { return new Set(thermos().filter(d => !devCfg(d.id).ignore && pnOf(devCfg(d.id)) > 0).map(roomOf)); }
 function bpName(P) { const pc = planCfg(P.id), b = bpCfg(P); return pc.room || String(b.name || '').trim() || P.id; }
@@ -1341,6 +1414,203 @@ function physRooms() {
   });
   return Object.values(out);
 }
+/* ===================================================================
+ * Wände aus dem Grundriss: Typ, Länge, Fläche, Himmelsrichtung
+ * =================================================================== */
+const WTYPE = { in: ['Innenwand', 'var(--mute)'], ext: ['Außenwand', '#f97316'], nb: ['Nachbarhaus (Brandwand)', '#a78bfa'], tr: ['Treppenhaus', '#38bdf8'] };
+const SHADE = { free: ['frei', 1], part: ['teilweise verschattet', 0.5], shade: ['stark verschattet', 0.2] };
+const DIRS = ['N', 'NNO', 'NO', 'ONO', 'O', 'OSO', 'SO', 'SSO', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+const dirName = a => DIRS[Math.round(((a % 360) + 360) % 360 / 22.5) % 16];
+const northDeg = () => num(S.cfg.orient && S.cfg.orient.north) || 0;   // wohin „oben im Plan“ zeigt (0 = Norden)
+function wallsOf(P) {
+  const pts = P.pts, c = centroid(pts), scale = Math.sqrt(P.a / polyArea(pts));
+  const h = num(planCfg(P.id).h) || num(S.cfg.planH) || 3, cfgW = planCfg(P.id).walls || {};
+  return pts.map((p, i) => {
+    const q = pts[(i + 1) % pts.length], dx = q[0] - p[0], dy = q[1] - p[1], len = Math.hypot(dx, dy) * scale;
+    let nx = dy, ny = -dx;                                     // Normale; nach außen drehen (weg vom Raummittelpunkt)
+    const mx = (p[0] + q[0]) / 2, my = (p[1] + q[1]) / 2;
+    if ((mx - c[0]) * nx + (my - c[1]) * ny < 0) { nx = -nx; ny = -ny; }
+    const planBearing = Math.atan2(nx, -ny) * 180 / Math.PI;   // 0 = oben im Plan, im Uhrzeigersinn
+    const az = ((northDeg() + planBearing) % 360 + 360) % 360;
+    const w = cfgW[i] || {}, b = bpCfg(P), uk = w.u || 'room';
+    const U = uk === 'room' ? uOf(WALLS, b.wallT, b.wallU) : uOf(WALLS, uk, w.uo);
+    return { i, p, q, mx, my, len, area: len * h, az, type: w.t || 'in', win: num(w.win) || 0, sh: w.sh || 'free', uk, uo: w.uo, U };
+  });
+}
+const wallsDefined = P => Object.values(planCfg(P.id).walls || {}).some(w => w && w.t && w.t !== 'in');
+function wallSums(P) {
+  const o = { ext: 0, win: 0, nb: 0, tr: 0, wins: [], extHT: 0, nbHT: 0 };
+  wallsOf(P).forEach(w => {
+    if (w.type === 'ext') { const a = Math.max(0, w.area - w.win); o.win += w.win; o.ext += a; o.extHT += a * (w.U + WB); if (w.win) o.wins.push({ az: w.az, a: w.win, f: SHADE[w.sh] ? SHADE[w.sh][1] : 1 }); }
+    if (w.type === 'nb') { o.nb += w.area; o.nbHT += w.area * w.U * 0.15; }
+    if (w.type === 'tr') o.tr += w.area;
+  });
+  return o;
+}
+
+/* ---------- Sonne auf die Fassade (Open-Meteo, je Himmelsrichtung) ---------- */
+function facadeSun(az, t) {
+  const d = new Date(t), key = dayKey(t) + 'T' + pad(d.getHours());
+  const v = { 0: WX.gti.N[key], 90: WX.gti.E[key], 180: WX.gti.S[key], 270: WX.gti.W[key] };
+  const lo = Math.floor(az / 90) * 90 % 360, hi = (lo + 90) % 360, w = (az - Math.floor(az / 90) * 90) / 90;
+  if (v[lo] != null && v[hi] != null) return v[lo] * (1 - w) + v[hi] * w;
+  const g = sunAt(t); return g != null ? g * 0.4 : 0;           // Ersatz: Globalstrahlung grob auf die Wand umgerechnet
+}
+const G_F = 0.45;   // Energiedurchlass Glas × Rahmenanteil
+function sunGain(name, t) {
+  let s2 = 0;
+  PLAN.filter(P => bpName(P) === name && bpCfg(P).heat !== 'off').forEach(P => {
+    wallSums(P).wins.forEach(w => { s2 += w.a * facadeSun(w.az, t) * G_F * w.f; });
+  });
+  return s2;
+}
+
+/* ===================================================================
+ * Wärmebilanz pro Raum:  Q_Heiz = H·(Ti−Ta) + C·dTi/dt − Q_Sonne − Q_intern − Q_fremd
+ * nur wenn der Heizkörper laufen darf (Freigabe), begrenzt auf 0 … Heizkörperleistung
+ * =================================================================== */
+const C_DEF = 15, Q_INT = 3;   // Wh/(K·m²) Wärmespeicher, W/m² innere Gewinne
+function roomBP(name) {
+  const parts = PLAN.filter(P => bpName(P) === name && bpCfg(P).heat !== 'off' && bpH(P).has);
+  return parts.length ? { parts, H: parts.reduce((a, P) => a + bpH(P).H, 0), A: parts.reduce((a, P) => a + P.a, 0),
+    fremd: parts.some(P => bpCfg(P).fremd) } : null;
+}
+const hv = (id, t, tol, k) => {   // Messwert Nr. k (1 = Ist, 2 = Soll) nahe t
+  const a = hist(id); if (!a.length) return null;
+  let lo = 0, hi = a.length - 1;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (a[m][0] < t) lo = m + 1; else hi = m; }
+  let best = null, bd = Infinity;
+  [lo - 1, lo].forEach(i => { if (i < 0 || !a[i] || a[i][k] == null) return; const d = Math.abs(a[i][0] - t); if (d < bd) { bd = d; best = a[i][k]; } });
+  return bd <= tol ? best : null;
+};
+const avgOf = vs => { const x = vs.filter(v => v != null); return x.length ? x.reduce((a, b) => a + b, 0) / x.length : null; };
+function balanceRoom(R, bp) {
+  const sens = R.sens.filter(d => hist(d.id).some(p => p[1] != null));
+  const ths = R.th.filter(d => !devCfg(d.id).ignore && hist(d.id).some(p => p[1] != null));
+  const tempDevs = sens.length ? sens : ths;
+  if (!tempDevs.length) return null;
+  const base = hist(tempDevs[0].id).filter(p => p[1] != null);
+  if (base.length < 3) return null;
+  const tol = (S.range <= 2 ? 0.6 : S.range <= 10 ? 1.5 : S.range <= 30 ? 4 : 30) * 36e5;
+  const Ti = t => avgOf(tempDevs.map(d => hv(d.id, t, tol, 1)));
+  const Tset = t => { const v = avgOf(ths.map(d => hv(d.id, t, tol, 2))); return v != null ? v : tiAt(bp.parts[0], t); };
+  const hasDiff = sens.length > 0 && ths.length > 0;
+  const Ttrv = t => avgOf(ths.map(d => hv(d.id, t, tol, 1)));
+  // Heizkörperleistung (Obergrenze)
+  const pnTh = ths.reduce((a, d) => a + pnOf(devCfg(d.id)), 0), nTh = ths.length ? (+devCfg(ths[0].id).n || 1.3) : 1.3;
+  const pnMan = bp.parts.reduce((a, P) => a + (bpCfg(P).rad.type ? pnOf(bpCfg(P).rad) : 0), 0);
+  const pn = pnTh + pnMan;
+  const Pmax = (t, ti) => { if (!pn) return Infinity; const dT = tmAt(t) - ti; return dT > 0 ? pn * Math.pow(dT / 50, nTh) : 0; };
+  // Schritte vorbereiten
+  const steps = [];
+  for (let i = 1; i < base.length; i++) {
+    const t = base[i][0], tp = base[i - 1][0], dt = (t - tp) / 36e5;
+    if (dt <= 0 || dt > (S.range > 30 ? 26 : 3.5)) continue;
+    const ti = Ti(t), tip = Ti(tp), to = outsideAt(t);
+    if (ti == null || tip == null || to == null) continue;
+    steps.push({ t, dt, ti, tip, to, set: Tset(t), rate: (ti - tip) / dt, qs: sunGain(R.name, t),
+      d: hasDiff ? (() => { const a = Ttrv(t); return a != null ? a - ti : null; })() : null });
+  }
+  if (!steps.length) return null;
+  // Lüften und Rückprall danach
+  let recTarget = null;
+  steps.forEach(s2 => {
+    s2.air = s2.dt <= 0.6 && s2.rate < -3;
+    if (s2.air) recTarget = s2.tip - (s2.tip - s2.ti) / 2;
+    s2.rec = !s2.air && recTarget != null && s2.ti < recTarget;
+    if (!s2.air && recTarget != null && s2.ti >= recTarget) recTarget = null;
+    s2.free = !s2.air && s2.ti <= s2.set + 0.5 && s2.set > s2.to + 2;
+  });
+  // Differenz Thermostat − Raumfühler: Ruhewert = 20-%-Quantil
+  let dBase = null;
+  if (hasDiff) { const ds = steps.map(s2 => s2.d).filter(v => v != null).sort((a, b) => a - b); if (ds.length >= 6) dBase = ds[Math.floor(ds.length * 0.2)]; }
+  steps.forEach(s2 => { s2.f = dBase != null && s2.d != null ? Math.max(0, Math.min(1, (s2.d - dBase) / 1.5)) : null; });
+  const on0 = s2 => s2.f != null ? s2.f >= 0.15 : s2.free;
+  // Wärmespeicher C lernen: Abkühlen ohne Heizung und ohne Sonne → τ = C/H
+  const taus = [];
+  steps.forEach(s2 => {
+    if (on0(s2) || s2.air || s2.rec || s2.qs > 20 || s2.dt > 1.5 || s2.rate >= -0.05) return;
+    const a = s2.tip - s2.to, b = s2.ti - s2.to;
+    if (a > 2 && b > 1 && b < a) { const tau = s2.dt / Math.log(a / b); if (tau > 2 && tau < 400) taus.push(tau); }
+  });
+  taus.sort((a, b) => a - b);
+  const cLearned = taus.length >= 6 ? Math.max(5, Math.min(60, bp.H * taus[Math.floor(taus.length / 2)] / bp.A)) : null;
+  const C = (cLearned || C_DEF) * bp.A;
+  // Fremdwärme lernen (Rohre, warme Nachbarn)
+  let qf = 0, qfN = 0;
+  if (bp.fremd) {
+    const xs = [];
+    steps.forEach(s2 => { if (on0(s2) || s2.air || s2.rec || s2.qs > 20 || s2.dt > 1.5) return; xs.push(bp.H * (s2.ti - s2.to) + C * s2.rate - Q_INT * bp.A); });
+    xs.sort((a, b) => a - b); qfN = xs.length;
+    if (xs.length >= 6) qf = Math.max(0, xs[Math.floor(xs.length / 2)]);
+  }
+  // Heizleistung je Schritt
+  const line = [];
+  let kwh = 0, hours = 0, heatH = 0;
+  steps.forEach(s2 => {
+    const cTerm = (s2.rec || s2.dt > 6) ? 0 : C * s2.rate;
+    const loss = bp.H * (s2.ti - s2.to);
+    const bal = loss + cTerm - s2.qs - Q_INT * bp.A - qf;
+    const on = on0(s2);
+    const W = on ? Math.max(0, Math.min(Pmax(s2.t, s2.ti), bal)) : 0;
+    let st = 'off';
+    if (W > 0) {
+      if (s2.f != null && s2.f >= 0.5) st = 'sure';
+      else if (s2.rate >= 0.3 && !s2.rec && s2.qs < 0.5 * (loss + cTerm)) st = 'heat';
+      else st = 'hold';
+    }
+    if (s2.air) st = 'air';
+    const e = W * s2.dt / 1000;
+    kwh += e; hours += s2.dt; if (W > 0) heatH += s2.dt;
+    line.push([s2.t, W, st, e, s2.dt]);
+  });
+  return { name: R.name, kwh, hours, heatH, line, C: C / bp.A, cLearned, qf, qfN, fremd: bp.fremd, hasDiff, dBase, pn, H: bp.H, A: bp.A };
+}
+
+/* ===================================================================
+ * Schimmel-Überwachung: Oberflächentemperatur je Außenwand und an eingemessenen Stellen
+ *   Wand:       fRsi = 1 − U·0,25  (Rsi 0,25 m²K/W für Ecken/hinter Möbeln, DIN 4108-2)
+ *   Messstelle: fRsi = (T_Oberfläche − T_außen) / (T_innen − T_außen), einmal mit IR-Thermometer gemessen
+ *   Oberflächenfeuchte = Wasser in der Raumluft / Sättigung bei Oberflächentemperatur
+ * =================================================================== */
+const fRsiWall = U => Math.max(0.3, Math.min(0.97, 1 - U * 0.25));
+const surfRH = (ti, rh, ts) => Math.min(100, absHum(ti, rh) / absHum(ts, 100) * 100);
+function roomOfP(P) { const n = planCfg(P.id).room; return n ? roomsList().find(R => R.name === n) || null : null; }
+function humDevOf(R) { return R ? R.sens.find(d => hist(d.id).some(p => p[4] != null && p[1] != null)) || null : null; }
+// Verlauf der Oberflächenfeuchte bei gegebenem fRsi
+function surfSeries(R, f) {
+  const d = humDevOf(R); if (!d) return [];
+  return hist(d.id).filter(p => p[1] != null && p[4] != null).map(p => {
+    const to = outsideAt(p[0]); if (to == null) return null;
+    const ts = to + f * (p[1] - to);
+    return { t: p[0], ti: p[1], rh: p[4], ts, srh: surfRH(p[1], p[4], ts), dp: dewPoint(p[1], p[4]), hrs: p[5] || 0 };
+  }).filter(Boolean);
+}
+function mouldStats(ser) {
+  if (!ser.length) return null;
+  const today = dayKey(Date.now()), days = {};
+  ser.forEach(x => { const k = dayKey(x.t), D = days[k] || (days[k] = { h80: 0, h100: 0, h: 0 }); D.h += x.hrs; if (x.srh >= 80) D.h80 += x.hrs; if (x.srh >= 99.5) D.h100 += x.hrs; });
+  const full = Object.keys(days).filter(k => days[k].h >= 20 || k === today);
+  const last = ser[ser.length - 1], T = days[today] || { h80: 0, h100: 0 };
+  const past = full.filter(k => k !== today), avg80 = past.length ? past.reduce((a, k) => a + days[k].h80, 0) / past.length : null;
+  const tau = Object.values(days).reduce((a, D) => a + D.h100, 0);
+  const lvl = (tau > 0 || (avg80 != null && avg80 >= 12) || T.h80 >= 12) ? 2 : ((avg80 != null && avg80 >= 4) || T.h80 >= 4 || last.srh >= 80) ? 1 : 0;
+  return { now: last.srh, ts: last.ts, dp: last.dp, ti: last.ti, h80Today: T.h80, h100Today: T.h100, avg80, days: past.length, tau, max: Math.max(...ser.map(x => x.srh)), lvl };
+}
+const LVL = [['#10b981', 'unkritisch'], ['#f59e0b', 'beobachten'], ['#ef4444', 'Schimmelgefahr']];
+function spotStats(sp) {
+  const P = PLAN.find(x => x.id === sp.P), R = P && roomOfP(P);
+  if (!R) return { err: 'Raum ' + (P ? P.id : '?') + ' ist keinem Gerät zugeordnet' };
+  if (!humDevOf(R)) return { err: 'Im Raum „' + R.name + '“ gibt es noch keinen Fühler mit Luftfeuchte' };
+  if (sp.f == null) return { err: 'Messung unvollständig' };
+  return Object.assign({ R }, mouldStats(surfSeries(R, sp.f)) || { err: 'Noch keine Messwerte im Zeitraum' });
+}
+// kälteste Außenwand eines Grundriss-Raums
+function wallStats(P) {
+  const R = roomOfP(P); if (!R || !humDevOf(R)) return [];
+  return wallsOf(P).filter(w => w.type === 'ext').map(w => ({ w, st: mouldStats(surfSeries(R, fRsiWall(w.U))) })).filter(x => x.st);
+}
+
 function designTi(P) {
   const pc = planCfg(P.id);
   if (pc.room) {
@@ -1535,8 +1805,11 @@ function roomCard(R) {
   const row = d => {
     const th = isThermo(d), det = [];
     if (th && d.set != null) det.push('Soll ' + fmt(d.set) + '°');
-    if (th && d.valve != null && valveSrc(d) === 'valve') det.push('Ventil ' + fmt(d.valve, 0) + ' %');
+    const bn = th ? balNow(roomOf(d)) : null;
+    if (bn) det.push(bn[1] > 0 ? '🔥 Heizung an (errechnet, ≈ ' + fmt(bn[1], 0) + ' W)' : 'Heizung aus (errechnet)');
+    else if (th && d.valve != null && valveSrc(d) === 'valve') det.push('Ventil ' + fmt(d.valve, 0) + ' %');
     else if (th && valveSrc(d) === 'state') det.push('Ventil ' + (d.heat ? 'offen' : 'zu'));
+    else if (bn === null && th && S.en && S.en.bal && S.en.bal[roomOf(d)]) det.push('Heizung aus (errechnet)');
     else if (th && d.set != null && d.temp != null) det.push(heating(d) && valveProxy(d.set, d.temp) === 0 ? 'Temperatur steigt – heizt vermutlich' : 'Ventil ≈ ' + fmt(valveProxy(d.set, d.temp), 0) + ' % (geschätzt)');
     if (!th && d.hum != null) det.push(fmt(d.hum, 0) + ' %' + (d.temp != null ? ' · ' + fmt(absHum(d.temp, d.hum)) + ' g/m³' : ''));
     const e = th && S.en.dev[d.id];
@@ -1547,7 +1820,7 @@ function roomCard(R) {
       <span class="rn"><span class="dot" style="background:${colorOf(d.id)}"></span><span class="rt">${esc(String(d.name).trim())}</span><small>${th ? 'Thermostat' : 'Fühler'}${d.online ? '' : ' · offline'}</small></span>
       <span class="rv">${d.temp != null ? fmt(d.temp) + '°' : '–'}</span>
       <span class="rd">${det.join(' · ')}</span>
-      ${th && (d.valve != null || d.set != null) ? `<span class="rbar"><i style="width:${Math.min(100, valveSrc(d) === 'valve' ? d.valve : valveSrc(d) === 'state' ? (d.heat ? 100 : 0) : (valveProxy(d.set, d.temp) || 0))}%"></i></span>` : ''}
+      ${th && (d.valve != null || d.set != null) ? `<span class="rbar"><i style="width:${Math.min(100, bn ? (bn[1] > 0 ? Math.max(8, bn[1] / Math.max(1, ...S.en.bal[roomOf(d)].line.map(l => l[1])) * 100) : 0) : valveSrc(d) === 'valve' ? d.valve : valveSrc(d) === 'state' ? (d.heat ? 100 : 0) : (valveProxy(d.set, d.temp) || 0))}%"></i></span>` : ''}
     </button>`;
   };
   return `<div class="card room ${anyOn ? '' : 'off'}">
@@ -1915,8 +2188,91 @@ async function saveMeter() {
 /* ===================================================================
  * Analyse
  * =================================================================== */
+function renderMould() {
+  const rows = [];
+  (S.cfg.spots || []).forEach(sp => {
+    const st = spotStats(sp);
+    rows.push({ k: '📍 ' + (sp.name || 'Messstelle'), sub: (st.R ? st.R.name : '') + (sp.f != null ? ' · fRsi ' + fmt(sp.f, 2) + ' (gemessen)' : ''), st, spot: sp.id });
+  });
+  PLAN.forEach(P => wallStats(P).forEach(({ w, st }) => rows.push({ k: '🧱 ' + bpName(P) + ' – Wand ' + dirName(w.az), sub: (WALLS[w.uk] ? WALLS[w.uk][0] : w.uk === 'room' ? 'Aufbau wie Raum' : 'eigener U') + ' · fRsi ' + fmt(fRsiWall(w.U), 2) + ' (berechnet)', st })));
+  const real = rows.filter(r => !r.st.err).sort((a, b) => b.st.lvl - a.st.lvl || b.st.now - a.st.now);
+  const errs = rows.filter(r => r.st.err);
+  $('#mouldList').innerHTML = (real.map(r => {
+    const st = r.st, c = LVL[st.lvl];
+    return `<div class="chk"><span style="color:${c[0]};font-size:18px">●</span><div><b>${esc(r.k)}</b> <span style="color:${c[0]};font-weight:600">${c[1]}</span>
+      <small>${esc(r.sub)}</small>
+      <small>jetzt: Oberfläche ${fmt(st.ts)} °C · <b>${fmt(st.now, 0)} %</b> Feuchte an der Oberfläche · Taupunkt ${fmt(st.dp)} °C (${st.ts - st.dp >= 0 ? fmt(st.ts - st.dp) + ' K Abstand' : 'Tauwasser!'})</small>
+      <small>heute ${fmt(st.h80Today, 1)} h über 80 %${st.h100Today ? ' · ' + fmt(st.h100Today, 1) + ' h Tauwasser' : ''}${st.avg80 != null ? ` · Ø ${fmt(st.avg80, 1)} h/Tag über 80 % (letzte ${st.days} Tage)` : ''}${st.tau ? ' · Tauwasser im Zeitraum: ' + fmt(st.tau, 1) + ' h' : ''}</small>
+      ${r.spot ? `<button class="lnk" data-spotedit="${r.spot}">bearbeiten</button>` : ''}</div></div>`;
+  }).join('') || '<div class="hint">Noch keine Werte. Außenwände im Plan unter ✏️ Wände &amp; Fenster markieren oder eine 📍 Messstelle setzen.</div>') +
+    (errs.length ? '<div class="hint" style="margin-top:6px">' + errs.map(r => esc(r.k) + ': ' + esc(r.st.err)).join('<br>') + '</div>' : '') +
+    (S.range < 7 ? '<div class="hint" style="margin-top:6px">Für den Tagesdurchschnitt oben mindestens 7 Tage wählen.</div>' : '');
+}
+
+/* ---------- Messstellen (📍) ---------- */
+let spotMode = false, spotCur = null;
+function openSpot(sp) {
+  spotCur = sp;
+  $('#spTitle').textContent = sp.isNew ? 'Neue Messstelle' : (sp.name || 'Messstelle');
+  $('#spName').value = sp.name || ''; $('#spTs').value = sp.ts ?? ''; $('#spT').value = localDT(sp.t || Date.now());
+  $('#spDel').hidden = !!sp.isNew;
+  spotInfo();
+  $('#spotDlg').showModal();
+}
+function spotCalc(sp, ts, t) {   // fRsi aus der Messung
+  const P = PLAN.find(x => x.id === sp.P), R = P && roomOfP(P);
+  if (!R) return { err: 'Die Stelle liegt in ' + (P ? P.id : '?') + ' – diesem Grundriss-Raum ist kein Gerät zugeordnet.' };
+  const devs = R.sens.length ? R.sens : R.th;
+  const tol = Math.abs(Date.now() - t) < 36e5 ? 36e5 : 3 * 36e5;
+  const ti = avgOf(devs.map(d => Math.abs(Date.now() - t) < 36e5 && d.temp != null ? d.temp : histAt(d.id, t, tol)));
+  const o = Math.abs(Date.now() - t) < 2 * 36e5 ? outsideNow() : null, to = o ? o.t : outsideAt(t);
+  if (ti == null || to == null) return { err: 'Zu diesem Zeitpunkt fehlen Innen- oder Außentemperatur.' };
+  if (ts == null) return { ti, to };
+  const f = (ts - to) / (ti - to);
+  return { ti, to, f, warn: ti - to < 8 ? 'Innen und außen liegen nur ' + fmt(ti - to, 1) + ' K auseinander – die Messung ist ungenau. Am besten an einem kälteren Tag wiederholen.' : null };
+}
+function spotInfo() {
+  const sp = spotCur; if (!sp) return;
+  const ts = num($('#spTs').value), t = new Date($('#spT').value).getTime() || Date.now();
+  const c = spotCalc(sp, ts, t);
+  const P = PLAN.find(x => x.id === sp.P);
+  let h = `Raum: <b>${esc(P ? bpName(P) : '?')}</b>`;
+  if (c.err) h += '<br>⚠ ' + esc(c.err);
+  else {
+    h += ` · innen ${fmt(c.ti)} °C · außen ${fmt(c.to)} °C`;
+    if (c.f != null) h += `<br>Temperaturfaktor fRsi = <b>${fmt(c.f, 2)}</b> ${c.f < 0.7 ? '– unter 0,7: <b>Schimmelrisiko</b> (Mindestwert nach DIN 4108-2)' : '– ab 0,7 unkritisch nach DIN 4108-2'}`;
+    if (c.warn) h += '<br>⚠ ' + c.warn;
+  }
+  if (!sp.isNew) { const st = spotStats(sp); if (!st.err) h += `<br>jetzt: ${fmt(st.ts)} °C an der Stelle · <b>${fmt(st.now, 0)} %</b> Oberflächenfeuchte · heute ${fmt(st.h80Today, 1)} h über 80 %`; }
+  $('#spInfo').innerHTML = h;
+}
+$('#spTs').addEventListener('input', spotInfo); $('#spT').addEventListener('input', spotInfo);
+$('#spSave').onclick = () => {
+  const sp = spotCur; if (!sp) return;
+  const ts = num($('#spTs').value), t = new Date($('#spT').value).getTime() || Date.now();
+  const c = spotCalc(sp, ts, t);
+  if (ts == null || c.err || c.f == null) { toast(c.err || 'Bitte die gemessene Temperatur eintragen'); return; }
+  const rec = { id: sp.id, P: sp.P, x: sp.x, y: sp.y, name: $('#spName').value.trim() || 'Messstelle', ts, t, ti: Math.round(c.ti * 10) / 10, to: Math.round(c.to * 10) / 10, f: Math.round(c.f * 1000) / 1000 };
+  S.cfg.spots = (S.cfg.spots || []).filter(x => x.id !== sp.id).concat([rec]);
+  $('#spotDlg').close(); markDirty(); if (S.tab === 'pl') renderPlan(); if (S.tab === 'an') renderMould();
+};
+$('#spDel').onclick = () => {
+  if (!spotCur || !confirm('Messstelle „' + (spotCur.name || '') + '“ löschen?')) return;
+  S.cfg.spots = (S.cfg.spots || []).filter(x => x.id !== spotCur.id);
+  $('#spotDlg').close(); markDirty(); if (S.tab === 'pl') renderPlan(); if (S.tab === 'an') renderMould();
+};
+$('#mouldList').addEventListener('click', e => { const b = e.target.closest('[data-spotedit]'); if (!b) return; const sp = (S.cfg.spots || []).find(x => x.id === b.dataset.spotedit); if (sp) openSpot(sp); });
+const inPoly = (x, y, pts) => { let c = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const [xi, yi] = pts[i], [xj, yj] = pts[j]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; } return c; };
+function svgPoint(e) { const svg = $('#plan'), pt = svg.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY; return pt.matrixTransform(svg.getScreenCTM().inverse()); }
+function spotPins() {
+  return (S.cfg.spots || []).map(sp => {
+    const st = spotStats(sp), col = st.err ? '#94a3b8' : LVL[st.lvl][0];
+    return `<g data-spot="${sp.id}" style="cursor:pointer"><circle cx="${sp.x}" cy="${sp.y}" r="13" fill="${col}" stroke="#fff" stroke-width="3"/><text x="${sp.x}" y="${sp.y + 5}" text-anchor="middle" style="font-size:13px;font-weight:800;fill:#fff">${st.err ? '?' : fmt(st.now, 0)}</text><title>${esc(sp.name)}${st.err ? '' : ': ' + fmt(st.now, 0) + ' % an der Oberfläche'}</title></g>`;
+  }).join('');
+}
+
 function renderAnalyse() {
-  const parts = [renderPass, renderHeatmap, renderTimeline, renderSankey, renderComfort, renderYear, renderMeasures, renderCheck];
+  const parts = [renderMould, renderPass, renderHeatmap, renderTimeline, renderSankey, renderComfort, renderYear, renderMeasures, renderCheck];
   parts.forEach(f => { try { f(); } catch (e) { console.error(f.name, e); } });
 }
 const halo = 'paint-order:stroke;stroke:var(--card);stroke-width:3px;stroke-linejoin:round';
@@ -1961,9 +2317,14 @@ function renderHeatmap() {
 }
 
 /* ---------- Heizzeiten ---------- */
+const ST_COL = { sure: '#c2410c', heat: '#ea580c', hold: '#fb923c' };
+const ST_TXT = { sure: 'an (sicher, Thermostat wärmer als Raum)', heat: 'heizt auf (errechnet)', hold: 'hält Temperatur (errechnet)', air: 'Lüften erkannt', off: 'aus' };
 function renderTimeline() {
-  const ths = thermos().filter(d => !isHidden(d) && hist(d.id).some(p => p[3] != null));
-  if (!ths.length) { $('#tlBox').innerHTML = '<div class="hint">Keine Ventildaten im Zeitraum.</div>'; return; }
+  const bal = S.en.bal || {};
+  const rows = Object.values(bal).map(B => ({ nm: B.name, bal: B }))
+    .concat(thermos().filter(d => !isHidden(d) && !bal[roomOf(d)] && hist(d.id).some(p => p[3] != null)).map(d => ({ nm: String(d.name).trim(), d })));
+  const ths = rows;
+  if (!ths.length) { $('#tlBox').innerHTML = '<div class="hint">Keine Daten im Zeitraum.</div>'; return; }
   const W = Math.max(300, $('#tlBox').clientWidth || 340), lab = 96, rh = 18, gap = 5, T = 2;
   const t1 = Date.now(), t0 = t1 - S.range * 864e5, X = t => lab + Math.max(0, Math.min(1, (t - t0) / (t1 - t0))) * (W - lab - 2);
   let svg = '';
@@ -1976,10 +2337,20 @@ function renderTimeline() {
       if (b > a) svg += `<rect x="${a}" y="0" width="${b - a}" height="${hgt}" fill="var(--chip)"/>`;
     }
   }
-  ths.forEach((d, i) => {
-    const y = T + i * (rh + gap), nm = String(d.name).trim(), src = valveSrc(d);
+  ths.forEach((row, i) => {
+    const y = T + i * (rh + gap), nm = row.nm;
     svg += `<text x="0" y="${y + 13}">${esc(nm.length > 14 ? nm.slice(0, 13) + '…' : nm)}</text>`;
     svg += `<rect x="${lab}" y="${y}" width="${W - lab - 2}" height="${rh}" rx="4" fill="none" stroke="var(--line)"/>`;
+    if (row.bal) {
+      const ref = Math.max(1, ...row.bal.line.map(l => l[1]));
+      row.bal.line.forEach(([t, Wt, st, e, dt]) => {
+        if (st === 'off') return;
+        const a = X(t - dt * 36e5), b = X(t);
+        svg += `<rect x="${a}" y="${y + 2}" width="${Math.max(1, b - a)}" height="${rh - 4}" fill="${st === 'air' ? '#38bdf8' : ST_COL[st]}" opacity="${st === 'air' ? .8 : (0.3 + 0.7 * Wt / ref).toFixed(2)}"><title>${esc(nm)} ${fmtTime(t, S.range > 1)}: ${ST_TXT[st]}${Wt ? ' · ≈ ' + fmt(Wt, 0) + ' W' : ''}</title></rect>`;
+      });
+      return;
+    }
+    const d = row.d, src = valveSrc(d);
     hist(d.id).forEach((p, i, arr) => {
       const [t, temp, set, , , hrs] = p, valve = valveOf(src, p, arr[i - 1]);
       if (!valve || !hrs) return;
@@ -1988,7 +2359,7 @@ function renderTimeline() {
     });
   });
   const yA = T + ths.length * (rh + gap) + 12;
-  const ticks = S.range <= 1 ? 8 : Math.min(7, S.range + 1);
+  const ticks = Math.max(2, Math.min(S.range <= 1 ? 8 : Math.min(7, S.range + 1), Math.floor((W - lab) / 48)));
   for (let i = 0; i <= ticks; i++) {
     let t = t0 + (t1 - t0) * i / ticks;
     if (S.range > 1 && S.range <= 7) { const dd = new Date(t0); dd.setHours(24 * (i + 1), 0, 0, 0); t = dd.getTime(); if (t > t1) break; }
@@ -2639,7 +3010,38 @@ function roomMetrics(R) {
   return { t, hum: hd ? hd.hum : null, ah: hd && hd.temp != null ? absHum(hd.temp, hd.hum) : null, wall, heat, kwhm2, heating: R.th.some(heating) };
 }
 
+let plEdit = false;
+function renderPlanEdit() {
+  let svg = '';
+  PLAN.forEach(P => {
+    const [cx, cy] = centroid(P.pts), nm = bpName(P);
+    svg += `<polygon class="pr nm" points="${P.pts.map(p => p.join(',')).join(' ')}" style="fill:var(--chip);stroke:none"/>
+      <text class="ps" x="${cx}" y="${cy}" font-weight="700">${esc(nm === P.id ? P.id : nm)}</text>`;
+  });
+  PLAN.forEach(P => wallsOf(P).forEach(w => {
+    const col = WTYPE[w.type][1], ext = w.type !== 'in';
+    svg += `<line class="we" x1="${w.p[0]}" y1="${w.p[1]}" x2="${w.q[0]}" y2="${w.q[1]}" stroke="${col}" stroke-width="${ext ? 7 : 2}" ${ext ? '' : 'stroke-dasharray="6 5"'}/>
+      <line class="wh" data-we="${P.id}|${w.i}" x1="${w.p[0]}" y1="${w.p[1]}" x2="${w.q[0]}" y2="${w.q[1]}"><title>${P.id} Wand ${w.i + 1}: ${WTYPE[w.type][0]} · ${fmt(w.len)} m · zeigt nach ${dirName(w.az)}</title></line>`;
+    if (w.type === 'ext' && w.win) {
+      const [cx, cy] = centroid(P.pts), k = 16 / Math.hypot(cx - w.mx, cy - w.my);
+      svg += `<text class="ps" x="${w.mx + (cx - w.mx) * k}" y="${w.my + (cy - w.my) * k + 4}" style="font-size:13px">🪟${fmt(w.win, 1)}${w.sh !== 'free' ? (w.sh === 'part' ? '◐' : '●') : ''}</text>`;
+    }
+  }));
+  // Nordpfeil
+  const n = -northDeg();
+  svg += `<g transform="translate(1340 70) rotate(${n})"><circle r="24" fill="var(--card)" stroke="var(--line)"/><path d="M0,-18 L7,6 L0,1 L-7,6 Z" fill="#ef4444"/><text y="-24" style="font-size:13px;font-weight:700;fill:var(--ink)" text-anchor="middle">N</text></g>`;
+  $('#plan').innerHTML = svg + spotPins();
+  $('#plLegend').innerHTML = '';
+  $('#wLeg').innerHTML = Object.entries(WTYPE).map(([k, [l, c]]) => `<span><i style="background:${c}"></i>${l}</span>`).join('') + '<span>🪟 Fenster m² · ◐ teilweise / ● stark verschattet</span>';
+  const nExt = PLAN.reduce((a, P) => a + wallsOf(P).filter(w => w.type !== 'in').length, 0);
+  $('#plHint').innerHTML = `${nExt} Wände als Außen-, Nachbarhaus- oder Treppenhauswand markiert. Wand antippen zum Ändern. Änderungen werden automatisch gespeichert.`;
+}
 function renderPlan() {
+  $('#plEditBox').hidden = !plEdit; $('#plMode').hidden = plEdit;
+  $('#plEdit').textContent = plEdit ? '✓ Fertig' : '✏️ Wände & Fenster';
+  $('#plEditInfo').textContent = plEdit ? '' : 'Oben zeigt nach ' + dirName(northDeg()) + ' (' + fmt(northDeg(), 0) + '°)';
+  if (document.activeElement !== $('#northIn')) $('#northIn').value = northDeg();
+  if (plEdit) { renderPlanEdit(); return; }
   $$('#plMode button').forEach(b => b.classList.toggle('on', b.dataset.m === plMode));
   const sc = SCALES[plMode];
   const named = P => !planCfg(P.id).room && bpName(P) !== P.id;
@@ -2647,6 +3049,7 @@ function renderPlan() {
   let svg = '';
   PLAN.forEach(P => {
     const R = planRoom(P), m = R ? roomMetrics(R) : null;
+    if (m && plMode === 'mould') { const ws = wallStats(P); if (ws.length) { m.wall = Math.max(...ws.map(x => x.st.now)); m.wallCalc = true; } }
     const val = m ? { temp: m.t, hum: m.hum, mould: m.wall != null ? m.wall : (m.hum != null ? m.hum + 10 : null), heat: m.heat, kwh: m.kwhm2 }[plMode] : null;
     const fill = lerpC(sc.stops, val) || '#f1f5f9';
     const [cx, cy] = centroid(P.pts);
@@ -2669,7 +3072,7 @@ function renderPlan() {
     if (m) {
       if (plMode === 'temp') { big = m.t != null ? fmt(m.t) + '°' : '–'; sub = m.hum != null ? fmt(m.hum, 0) + ' %' : ''; }
       if (plMode === 'hum') { big = m.hum != null ? fmt(m.hum, 0) + ' %' : '–'; sub = m.ah != null ? fmt(m.ah) + ' g/m³' : ''; }
-      if (plMode === 'mould') { big = m.wall != null ? fmt(m.wall, 0) + ' %' : (m.hum != null ? fmt(m.hum, 0) + ' %' : '–'); sub = m.wall != null ? 'an der Wand' : (m.hum != null ? 'Raumluft' : 'kein Fühler'); }
+      if (plMode === 'mould') { big = m.wall != null ? fmt(m.wall, 0) + ' %' : (m.hum != null ? fmt(m.hum, 0) + ' %' : '–'); sub = m.wall != null ? (m.wallCalc ? 'kälteste Außenwand' : 'an der Wand') : (m.hum != null ? 'Raumluft' : 'kein Fühler'); }
       if (plMode === 'heat') { big = m.heat == null ? '–' : (m.heating ? '🔥 ' : '') + fmt(m.heat, 0) + ' %'; sub = m.t != null ? fmt(m.t) + '°' : ''; }
       if (plMode === 'kwh') { big = m.kwhm2 != null ? fmt(m.kwhm2, 2) : '–'; sub = 'kWh/m² · ' + rangeLabel(); }
     }
@@ -2688,7 +3091,10 @@ function renderPlan() {
     }
     svg += '</g>';
   });
-  $('#plan').innerHTML = svg;
+  if (plMode === 'mould') PLAN.forEach(P => wallStats(P).forEach(({ w, st }) => {   // Außenwände nach Oberflächenfeuchte einfärben
+    svg += `<line x1="${w.p[0]}" y1="${w.p[1]}" x2="${w.q[0]}" y2="${w.q[1]}" stroke="${lerpC(SCALES.mould.stops, st.now)}" stroke-width="9" stroke-linecap="round"><title>${esc(bpName(P))} Wand ${dirName(w.az)}: ${fmt(st.now, 0)} % an der Oberfläche</title></line>`;
+  }));
+  $('#plan').innerHTML = svg + spotPins();
   $('#plLegend').innerHTML = sc.leg.map(([l, c]) => `<span><i style="background:${c}"></i>${l}</span>`).join('') + '<span><i style="background:var(--chip);border:1px solid var(--mute)"></i>ohne Gerät</span><span><i style="background:var(--chip);border:1px dashed var(--mute)"></i>nicht zugeordnet</span>';
   $('#plHint').innerHTML = assigned < PLAN.length
     ? `${PLAN.length - assigned} Räume sind noch nicht zugeordnet – unter <b>Einstellungen → Räume → Grundriss</b> einem Gerät-Raum zuweisen oder unter <b>Einstellungen → Bauphysik</b> einen Namen geben (z.B. Flur).`
@@ -2719,7 +3125,10 @@ function bpOut(P) {
   const b = bpCfg(P), h = bpH(P), pc = planCfg(P.id), tn = num(S.cfg.bp.tNorm) ?? -12;
   if (b.heat === 'off') return 'Wird nicht mitgerechnet.';
   if (!h.has) return 'Noch keine Angaben – mindestens Außenwand oder Fenster eintragen. Innenräume ohne Außenflächen einfach leer lassen.';
-  const L = bpLoad(P);
+  const L = bpLoad(P), B = S.en && S.en.bal && S.en.bal[bpName(P)];
+  const learn = B ? `<br>Wärmespeicher ≈ ${fmt(B.C, 0)} Wh/(K·m²) ${B.cLearned ? '(aus deinen Messwerten gelernt)' : '(Standardwert – wird gelernt, sobald es genug Abkühl-Phasen gibt)'}` +
+    (B.fremd ? ` · Fremdwärme ≈ <b>${fmt(B.qf, 0)} W</b>${B.qfN < 6 ? ' (noch zu wenig Daten)' : ''}` : '') +
+    (B.hasDiff ? ' · Heizsignal aus Thermostat − Raumfühler ✓' : '') : '';
   let o = `Wärmeverlust <b>${fmt(h.H, 0)} W/K</b> (Wand/Fenster/Decke ${fmt(h.HT, 0)}, Lüftung ${fmt(h.HV, 0)}) · Heizlast bei ${fmt(tn, 0)} °C und ${fmt(designTi(P), 0)} °C innen ≈ <b>${fmt(L, 0)} W</b> (${fmt(L / P.a, 0)} W/m²)`;
   // reicht der Heizkörper?
   const tm = vlFor(tn) - (+S.cfg.heat.spread || 0) / 2, ti = designTi(P);
@@ -2733,7 +3142,7 @@ function bpOut(P) {
     const Pm = pn * Math.pow((tm - ti) / 50, n);
     o += `<br>Heizkörper bei ${fmt(tm, 0)} °C Heizwasser ≈ <b>${fmt(Pm, 0)} W</b>${scope} – ` + (Pm >= Lc ? '✓ reicht' : Pm >= 0.8 * Lc ? '≈ knapp' : '⚠ zu klein für ' + fmt(Lc, 0) + ' W');
   }
-  return o;
+  return o + learn;
 }
 function bpCard(P, open) {
   const pc = planCfg(P.id), b = bpCfg(P), trv = pc.room && trvRooms().has(pc.room);
@@ -2745,9 +3154,14 @@ function bpCard(P, open) {
     ${pc.room ? `<div class="hint" style="margin:2px 0 6px">Raum <b>${esc(pc.room)}</b> · ${fmt(P.a)} m² · Wandfläche laut Plan ${fmt(P.w)} m² (innen + außen)</div>`
       : `<label>Name (z.B. Flur, Abstellraum)<input data-b="name" value="${esc(b.name || '')}" placeholder="${P.id}"></label><div class="hint" style="margin:-4px 0 6px">${fmt(P.a)} m² · Wandfläche laut Plan ${fmt(P.w)} m²</div>`}
     <label>Berechnung<select data-b="heat"><option value="on">mitrechnen</option><option value="off" ${b.heat === 'off' ? 'selected' : ''}>nicht mitrechnen (unbeheizt, Abstellraum …)</option></select></label>
-    <div class="f2"><label>Außenwand m² (ohne Fenster)${nIn('ext', b.ext, '0')}</label><label>Wandaufbau<select data-b="wallT">${optsOf(WALLS, b.wallT)}</select></label></div>${own(b.wallT, 'wallU')}
+    ${wallsDefined(P) ? (() => { const h = bpH(P), ws = wallsOf(P).filter(w => w.type === 'ext');
+      return `<div class="pn" style="margin-bottom:8px">📐 Aus dem Grundriss: Außenwand <b>${fmt(h.ext)} m²</b>${ws.length ? ' (' + [...new Set(ws.map(w => dirName(w.az)))].join(', ') + ')' : ''} · Fenster <b>${fmt(h.win)} m²</b>${h.nb ? ' · Nachbarhaus ' + fmt(h.nb) + ' m²' : ''}${h.tr ? ' · Treppenhaus ' + fmt(h.tr) + ' m²' : ''}<br><span class="hint">Ändern im Plan unter ✏️ Wände &amp; Fenster.</span></div>
+      <div class="f2"><label>Wandaufbau<select data-b="wallT">${optsOf(WALLS, b.wallT)}</select></label><label>Fensterart<select data-b="winT">${optsOf(WINS, b.winT)}</select></label></div>${own(b.wallT, 'wallU')}${own(b.winT, 'winU')}`; })()
+    : `<div class="f2"><label>Außenwand m² (ohne Fenster)${nIn('ext', b.ext, '0')}</label><label>Wandaufbau<select data-b="wallT">${optsOf(WALLS, b.wallT)}</select></label></div>${own(b.wallT, 'wallU')}
     <div class="f2"><label>Fenster m² (alle)${nIn('win', b.win, '0')}</label><label>Fensterart<select data-b="winT">${optsOf(WINS, b.winT)}</select></label></div>${own(b.winT, 'winU')}
-    <div class="f2"><label>Fläche zu unbeheizt m²${nIn('unh', b.unh, '0')}</label><label>Art<select data-b="unhT">${optsOf(UNH, b.unhT)}</select></label></div>${own(b.unhT, 'unhU')}
+    <div class="hint" style="margin:-4px 0 8px">Genauer, mit Himmelsrichtung und Sonne: im Plan unter ✏️ Wände &amp; Fenster die Wände antippen.</div>`}
+    <div class="f2"><label>Decke/Boden zu unbeheizt m²${nIn('unh', b.unh, '0')}</label><label>Art<select data-b="unhT">${optsOf(UNH, b.unhT)}</select></label></div>${own(b.unhT, 'unhU')}
+    <label class="ck"><input type="checkbox" data-b="fremd" ${b.fremd ? 'checked' : ''}> Heizungsrohre / warmer Nachbar – Fremdwärme lernen</label>
     <label>Luftwechsel pro Stunde<select data-b="n">${AIR.map(([v, l]) => `<option value="${v}" ${+b.n === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     ${trv ? '<div class="hint">♨️ Raum hat ein Smart-Thermostat – der Verbrauch kommt aus dessen Messwerten. Diese Angaben dienen der Heizlast-Kontrolle.</div>' : `
     ${sens ? '<div class="hint">🌡️ Im Raum hängt der Fühler „' + esc(String(sens.name).trim()) + '“ – gerechnet wird mit der gemessenen Temperatur. Die Stellung dient dann nur für Lücken in den Messwerten.</div>' : ''}
@@ -2895,8 +3309,8 @@ function detail(id) {
   const st = [];
   if (T.length) st.push(['Min', fmt(Math.min(...T)) + ' °C'], ['Max', fmt(Math.max(...T)) + ' °C'], ['Ø', fmt(e && e.th ? e.ts / e.th : T.reduce((a, b) => a + b, 0) / T.length) + ' °C']);
   if (e) {
-    if (e.vh) st.push(['Ventil Ø', fmt(e.vs / e.vh, 0) + ' %']);
-    st.push(['Heizstunden', fmt(e.heat)]);
+    if (e.vh && !e.bal) st.push(['Ventil Ø', fmt(e.vs / e.vh, 0) + ' %']);
+    st.push([e.bal ? 'Heizstunden (errechnet)' : 'Heizstunden', fmt(e.heat)]);
     st.push(['Energie', fmt(e.kwh * S.en.k) + ' kWh']);
     const L = S.en.loss[roomOf(d)];
     if (L) st.push(['Verlust Raum (Bauphysik)', fmt(L.kwh) + ' kWh']);
@@ -2907,15 +3321,23 @@ function detail(id) {
   const cl = colorOf(id), pts = i => h.filter(p => p[i] != null).map(p => ({ x: p[0], y: p[i] }));
   const ds = [{ label: 'Ist', borderColor: cl, backgroundColor: cl, data: pts(1), spanGaps: gap(), yAxisID: 'y' }];
   if (pts(2).length) ds.push({ label: 'Soll', borderColor: css('--mute'), borderDash: [5, 4], borderWidth: 1.5, stepped: true, tension: 0, data: pts(2), spanGaps: gap(), yAxisID: 'y' });
-  const src = isThermo(d) ? valveSrc(d) : null;
+  const B = S.en.bal && S.en.bal[roomOf(d)];
+  const src = isThermo(d) && !B ? valveSrc(d) : null;
   if (src) h.forEach((p, i) => { p.v = valveOf(src, p, h[i - 1]); });   // wirksame Ventilöffnung (gemeldet, offen-Anteil oder geschätzt)
   const vpts = src ? h.filter(p => p.v != null).map(p => ({ x: p[0], y: Math.round(p.v) })) : [];
-  const right = vpts.length ? 3 : pts(4).length ? 4 : 0;
+  if (B) {   // Heizlinie aus der Wärmebilanz: Leistung in W
+    const sure = B.line.map(l => ({ x: l[0], y: l[2] === 'sure' ? Math.round(l[1]) : 0 }));
+    const calc = B.line.map(l => ({ x: l[0], y: l[2] === 'heat' || l[2] === 'hold' ? Math.round(l[1]) : 0 }));
+    if (B.hasDiff) ds.push({ label: 'Heizung an (sicher)', unit: 'W', borderColor: '#c2410c', backgroundColor: '#c2410c55', fill: 'origin', stepped: true, tension: 0, borderWidth: 1, data: sure, yAxisID: 'y1' });
+    ds.push({ label: 'Heizung an (errechnet)', unit: 'W', borderColor: '#fb923c', backgroundColor: '#fb923c33', fill: 'origin', stepped: true, tension: 0, borderWidth: 1, data: calc, yAxisID: 'y1' });
+  }
+  const right = B ? 0 : vpts.length ? 3 : pts(4).length ? 4 : 0;
   const vLabel = { valve: 'Ventil', state: 'Ventil offen (Anteil)', proxy: 'Ventil (geschätzt)' }[src] || 'Ventil';
   if (right) ds.push({ label: right === 3 ? vLabel : 'Feuchte', unit: '%', borderColor: right === 3 ? '#f9731688' : '#3b82f688', backgroundColor: right === 3 ? '#f9731622' : '#3b82f622', fill: true, borderWidth: 1, data: right === 3 ? vpts : pts(right), spanGaps: gap(), yAxisID: 'y1' });
   const o = baseOpts();
   o.plugins.legend = { display: true, labels: { color: css('--mute'), boxWidth: 12, font: { size: 11 } } };
   if (right) o.scales.y1 = { position: 'right', min: 0, max: 100, grid: { display: false }, ticks: { color: css('--mute'), callback: v => v + '%' } };
+  if (B) o.scales.y1 = { position: 'right', min: 0, grid: { display: false }, ticks: { color: css('--mute'), callback: v => fmt(v, 0) + ' W' } };
   mk('dt', { type: 'line', data: { datasets: ds }, options: o });
 }
 
@@ -3007,7 +3429,46 @@ $('#ntfyGen').onclick = () => {
   toast('Thema erzeugt – jetzt speichern und in ntfy abonnieren');
 };
 $('#plMode').onclick = e => { const b = e.target.closest('button'); if (!b) return; plMode = b.dataset.m; store.set('heizdash.plMode', plMode); renderPlan(); };
+$('#plEdit').onclick = () => { plEdit = !plEdit; spotMode = false; renderPlan(); };
+$('#plSpot').onclick = () => { spotMode = !spotMode; $('#plSpot').textContent = spotMode ? '✕ abbrechen' : '📍 Messstelle'; if (spotMode) toast('Jetzt auf die Stelle im Plan tippen'); };
+$('#northIn').addEventListener('input', e => { S.cfg.orient = Object.assign({}, S.cfg.orient, { north: num(e.target.value) || 0 }); markDirty(); renderPlan(); });
+let wdCur = null;
+$('#wdType').innerHTML = Object.entries(WTYPE).map(([k, [l]]) => `<option value="${k}">${l}</option>`).join('');
+$('#wdSh').innerHTML = Object.entries(SHADE).map(([k, [l]]) => `<option value="${k}">${l}</option>`).join('');
+const wdSync = () => { const t = $('#wdType').value; $('#wdWin').hidden = t !== 'ext'; $('#wdBuild').hidden = t !== 'ext' && t !== 'nb'; $('#wdUoL').hidden = $('#wdU').value !== 'own'; };
+$('#wdType').onchange = wdSync; $('#wdU').onchange = wdSync;
+$('#wdSave').onclick = () => {
+  if (!wdCur) return;
+  S.cfg.plan = S.cfg.plan || {};
+  const pc = S.cfg.plan[wdCur.P] || (S.cfg.plan[wdCur.P] = {}), ws = pc.walls || (pc.walls = {});
+  const t = $('#wdType').value;
+  ws[wdCur.i] = t === 'in' ? { t } : { t, win: t === 'ext' ? num($('#wdWinA').value) || 0 : 0, sh: $('#wdSh').value,
+    u: $('#wdU').value === 'room' ? undefined : $('#wdU').value, uo: $('#wdU').value === 'own' ? num($('#wdUo').value) : undefined };
+  $('#wallDlg').close(); markDirty(); renderPlan();
+};
 $('#plan').addEventListener('click', e => {
+  const pin = e.target.closest('[data-spot]');
+  if (pin && !spotMode) { const sp = (S.cfg.spots || []).find(x => x.id === pin.dataset.spot); if (sp) openSpot(sp); return; }
+  if (spotMode) {
+    const pt = svgPoint(e), P = PLAN.find(Q => inPoly(pt.x, pt.y, Q.pts));
+    spotMode = false; $('#plSpot').textContent = '📍 Messstelle';
+    if (!P) { toast('Bitte innerhalb eines Raums tippen'); return; }
+    openSpot({ id: 's' + Date.now().toString(36), P: P.id, x: Math.round(pt.x), y: Math.round(pt.y), isNew: true }); return;
+  }
+  const we = e.target.closest('[data-we]');
+  if (we) {
+    const [pid, i] = we.dataset.we.split('|'), P = PLAN.find(x => x.id === pid), w = wallsOf(P)[+i];
+    wdCur = { P: pid, i: +i };
+    $('#wdTitle').textContent = (bpName(P) === pid ? pid : bpName(P) + ' (' + pid + ')') + ' – Wand ' + (+i + 1);
+    $('#wdInfo').innerHTML = `Länge ≈ <b>${fmt(w.len)} m</b> · Fläche ≈ <b>${fmt(w.area)} m²</b> · zeigt nach <b>${dirName(w.az)}</b> (${fmt(w.az, 0)}°)`;
+    const bb = bpCfg(P);
+    $('#wdU').innerHTML = `<option value="room">wie im Raum eingestellt (${WALLS[bb.wallT] ? WALLS[bb.wallT][0] : 'eigener U-Wert'})</option>` +
+      Object.entries(WALLS).map(([k, v]) => `<option value="${k}">${v[0]}${v[1] != null ? ' (U ' + fmt(v[1], 2) + ')' : ''}</option>`).join('');
+    $('#wdType').value = w.type; $('#wdWinA').value = w.win || ''; $('#wdSh').value = w.sh; $('#wdU').value = w.uk; $('#wdUo').value = w.uo ?? '';
+    wdSync();
+    $('#wallDlg').showModal(); return;
+  }
+  if (plEdit) return;
   const pg = e.target.closest('[data-p]'); if (!pg) return;
   const P = PLAN.find(x => x.id === pg.dataset.p), R = P && planRoom(P);
   if (!R) {
@@ -3166,7 +3627,7 @@ $('#tab-hk').addEventListener('input', e => {
       const r = b.rad || (b.rad = {}); r[k.slice(4)] = k === 'rad.type' ? t.value : num(t.value);
       if (k === 'rad.type' && t.value && t.value !== 'manual') { if (r.h == null) r.h = 600; if (r.w == null) r.w = 1000; if (r.count == null) r.count = 1; }
     }
-    else b[k] = ['name', 'heat', 'wallT', 'winT', 'unhT'].includes(k) ? t.value : num(t.value);
+    else b[k] = t.type === 'checkbox' ? t.checked : ['name', 'heat', 'wallT', 'winT', 'unhT'].includes(k) ? t.value : num(t.value);
     markDirty();
     if (t.tagName === 'SELECT' && /T$|^rad\.type$|^heat$/.test(k)) { bpBox.outerHTML = bpCard(PLAN.find(x => x.id === id), true); bpTotal(); }
     else if (k === 'name') bpBox.querySelector('summary span').textContent = t.value.trim() || 'ohne Namen';
@@ -3267,10 +3728,10 @@ window.addEventListener('beforeunload', e => { if (S.dirty) { e.preventDefault()
  * Demo (wenn die Datei lokal ohne Google geöffnet wird)
  * =================================================================== */
 const DS = {
-  cfg: { bp: { tNorm: -12, limit: 15 }, cost: { ap: 14.5, gp: 420 }, pass: { year: 1910, fp: 0.6, co2: 180, ww: false },
+  cfg: { spots: [{ id: 'sdemo', P: 'P3', x: 1018, y: 202, name: 'Ecke am Balkon-Träger', ts: 13.2, t: Date.now() - 2 * 864e5, ti: 20.3, to: 6, f: 0.503 }], bp: { tNorm: -12, limit: 15 }, cost: { ap: 14.5, gp: 420 }, pass: { year: 1910, fp: 0.6, co2: 180, ww: false },
     measures: [{ t: Date.now() - 10 * 864e5, name: 'Fensterdichtungen erneuert', room: 'Gästezimmer' }],
     plan: { P2: { bp: { name: 'Flur', ext: 0, win: 0, unh: 4 } }, P4: { bp: { name: 'Abstellraum', heat: 'off' } },
-      P1: { room: 'Wohnzimmer', bp: { ext: 14, win: 5.5 } }, P3: { room: 'Arbeitszimmer' }, P5: { room: 'Bad' }, P8: { room: 'Küche' }, P9: { room: 'Gästezimmer', bp: { ext: 10, win: 2.6, ti: 18, rad: { type: '22', h: 600, w: 800, count: 1 } } },
+      P1: { room: 'Wohnzimmer', bp: { ext: 14, win: 5.5 } }, P3: { room: 'Arbeitszimmer', bp: { fremd: true }, walls: { 0: { t: 'ext', win: 2.5, sh: 'free' }, 1: { t: 'nb' } } }, P5: { room: 'Bad' }, P8: { room: 'Küche' }, P9: { room: 'Gästezimmer', bp: { ext: 10, win: 2.6, ti: 18, rad: { type: '22', h: 600, w: 800, count: 1 } } },
       P10: { bp: { name: 'Schlafzimmer', ext: 9, win: 2.2, ti: 16, tiLog: [[Date.now() - 6 * 864e5, 20], [Date.now() - 2 * 864e5, 18]], rad: { type: '21', h: 600, w: 1000, count: 1 } } }, P11: { room: 'Jutta' }, P12: { room: 'Ilse' }, P13: { room: 'Bad Ilse' } },
     heat: { mode: 'curve', vl: 55, spread: 10, t1: -10, v1: 65, t2: 15, v2: 35, outside: 's0' },
     devices: {
@@ -3401,7 +3862,7 @@ function demoData(days) {
 load();
 </script>
 <script>
-window.APP_VERSION = 'heizung-v12';
+window.APP_VERSION = 'heizung-v14';
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
   let reloaded = false;
