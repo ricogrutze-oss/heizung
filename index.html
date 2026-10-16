@@ -239,6 +239,10 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
 #plan .wh{stroke:transparent;stroke-width:16;cursor:pointer}
 #plan.drawing{touch-action:none;cursor:crosshair}
 #plan .pipe{fill:none;stroke:#dc2626;stroke-width:5;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:1 9}
+.dtabs{display:flex;gap:6px;overflow-x:auto;margin:0 0 10px;padding-bottom:2px}
+.dtabs:empty{display:none}
+.dtabs button{flex:none;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:20px;padding:6px 12px;font-size:13px;display:flex;align-items:center;gap:6px}
+.dtabs button.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
 .pm{display:grid;grid-template-columns:34px 1fr 74px;gap:6px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line);font-size:13px}
 .pm b{font-size:12px;background:var(--chip);border-radius:6px;text-align:center;padding:4px 0}
 .pm small{display:block;color:var(--mute);font-size:11px}
@@ -535,7 +539,8 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
     <div class="f2">
       <label>Primärenergiefaktor Fernwärme<input type="number" inputmode="decimal" step="0.01" data-c="pass.fp" placeholder="vom Versorger, z.B. 0,6"></label>
       <label>CO₂ g/kWh (optional)<input type="number" inputmode="decimal" step="1" data-c="pass.co2" placeholder="vom Versorger"></label></div>
-    <label class="ck"><input type="checkbox" data-c="pass.ww"> Warmwasser wird dezentral bereitet (z.B. Durchlauferhitzer) – Pauschale 20 kWh/m²·a nach § 82 GEG addieren</label>
+    <div class="hint">Warmwasser läuft bei dir nicht über die Fernwärme – der Pass zeigt nur Heizung.</div>
+    <label class="ck"><input type="checkbox" data-c="pass.ww"> Zum Vergleich zusätzlich den Wert „wie ein offizieller Ausweis“ zeigen (der rechnet bei Durchlauferhitzer pauschal 20 kWh/m²·a Warmwasser dazu)</label>
     <p class="hint">Den Primärenergie- und CO₂-Faktor veröffentlicht der Fernwärmeversorger (Zertifikat nach AGFW FW 309). Gebäudenutzfläche = Wohnfläche × 1,2 (§ 82 GEG).</p>
   </section>
 
@@ -655,6 +660,7 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
 <dialog id="detail">
   <div class="dh"><span class="dot" id="dDot"></span><h3 id="dTitle"></h3><button class="ib" data-close>✕</button></div>
   <div class="db">
+    <div class="dtabs" id="dTabs"></div>
     <div id="dCtl"></div>
     <div class="seg rangeSeg"></div>
     <div class="kv" id="dKv"></div>
@@ -1315,15 +1321,19 @@ function physLoss(name) {
   const R = roomsList().find(x => x.name === name);
   const devs = R ? (R.sens.length ? R.sens : R.th) : [];
   const step = S.range <= 2 ? 36e5 : S.range <= 30 ? 3 * 36e5 : 864e5, t1 = Date.now(), t0 = t1 - S.range * 864e5;
-  let kwh = 0, n = 0, ti = 0;
+  let kwh = 0, gain = 0, net = 0, n = 0, ti = 0, to = 0, nt = 0;
+  const line = [];
   for (let t = t0 + step / 2; t < t1; t += step) {
     const To = outsideAt(t); if (To == null) continue;
     const vs = devs.map(d => histAt(d.id, t, step * 2)).filter(v => v != null);
     const Ti = vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : tiAt(parts[0], t);
     if (vs.length) { ti += Ti; n++; }
-    if (Ti > To) kwh += H * (Ti - To) * step / 36e5 / 1000;
+    to += To; nt++;
+    const W = Ti > To ? H * (Ti - To) : 0, G = sunGain(name, t) + Q_INT * A, Wn = Math.max(0, W - G);
+    kwh += W * step / 36e5 / 1000; gain += Math.min(W, G) * step / 36e5 / 1000; net += Wn * step / 36e5 / 1000;
+    line.push([t, W, Wn, To, Ti]);
   }
-  return { kwh, H, A, measured: n > 0, ti: n ? ti / n : null };
+  return { kwh, gain, net, H, A, line, measured: n > 0, ti: n ? ti / n : null, to: nt ? to / nt : null };
 }
 
 /* ---------- Wärmezähler: Ablesungen [Zeit, kWh, VL, RL, Außen, Notiz] ---------- */
@@ -1663,7 +1673,7 @@ function render() {
   if (S.tab === 'hk' && (!S.dirty || S.tabSwitch)) renderHK();
   S.tabSwitch = false;
   $('#saveBar').hidden = !S.dirty;
-  if (S.open && $('#detail').open) detail(S.open);
+  if (S.open && $('#detail').open) { if (String(S.open).startsWith('room:')) detailRoom(S.open.slice(5)); else detail(S.open); }
   renderWall();
 }
 
@@ -1841,7 +1851,7 @@ function roomCard(R) {
       ${th && (d.valve != null || d.set != null) ? `<span class="rbar"><i style="width:${Math.min(100, bn ? (bn[1] > 0 ? Math.max(8, bn[1] / Math.max(1, ...S.en.bal[roomOf(d)].line.map(l => l[1])) * 100) : 0) : valveSrc(d) === 'valve' ? d.valve : valveSrc(d) === 'state' ? (d.heat ? 100 : 0) : (valveProxy(d.set, d.temp) || 0))}%"></i></span>` : ''}
     </button>`;
   };
-  return `<div class="card room ${anyOn ? '' : 'off'}">
+  return `<div class="card room ${anyOn ? '' : 'off'}" data-room="${esc(R.name)}">
     <div class="rh"><span class="nm">${R.out ? '🌤️ ' : ''}${esc(R.name)}</span><span class="badges">${b.join('')}</span></div>
     <div class="rtop"><div class="big" style="color:${tempColor(R.out ? null : main)}">${fmt(main)}<small> °C</small></div>
       <div class="meta">${sub.join('<br>') || '&nbsp;'}</div></div>
@@ -2041,23 +2051,23 @@ function renderForecast() {
 function renderCompare() {
   const E = S.en, k = E.k;
   const names = [...new Set(Object.keys(E.rooms).concat(Object.keys(E.loss)))];
-  const rows = names.map(n => ({ n, v: E.rooms[n] ? E.rooms[n].kwh * k : null, l: E.loss[n] ? E.loss[n].kwh : null, phys: E.rooms[n] && E.rooms[n].phys }))
+  const rows = names.map(n => ({ n, v: E.rooms[n] ? E.rooms[n].kwh * k : null, l: E.loss[n] ? E.loss[n].net : null, g: E.loss[n] ? E.loss[n].kwh : null, phys: E.rooms[n] && E.rooms[n].phys }))
     .filter(r => (r.v || 0) + (r.l || 0) > 0.05).sort((a, b) => ((b.l || 0) + (b.v || 0)) - ((a.l || 0) + (a.v || 0)));
   $('#cmpP').hidden = !Object.keys(E.loss).length;
   if (!Object.keys(E.loss).length) return;
   const both = rows.filter(r => r.v != null && r.l != null && !r.phys);
   const sv = both.reduce((a, r) => a + r.v, 0), sl = both.reduce((a, r) => a + r.l, 0);
-  const lossAll = Object.values(E.loss).reduce((a, L) => a + L.kwh, 0);
+  const lossAll = Object.values(E.loss).reduce((a, L) => a + L.net, 0), toAll = Object.values(E.loss).find(L => L.to != null);
   $('#cmpSum').innerHTML = [
     [fmt(E.sum != null ? E.sum : E.total * k, 0), E.sum != null ? 'kWh Zähler' : 'kWh Ventil-Rechn.'],
-    [fmt(lossAll, 0), 'kWh Verlust Bauphysik'],
-    [sl ? fmt(sv / sl * 100, 0) + ' %' : '–', 'Ventil ÷ Verlust'],
-    [Object.keys(E.loss).length, 'Räume mit Angaben']
+    [fmt(lossAll, 0), 'kWh Bauphysik (netto)'],
+    [sl ? fmt(sv / sl * 100, 0) + ' %' : '–', 'Messung ÷ Bauphysik'],
+    [toAll ? fmt(toAll.to) + ' °C' : '–', 'Ø außen im Zeitraum']
   ].map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join('');
   mk('cmpChart', { type: 'bar',
     data: { labels: rows.map(r => r.n), datasets: [
       { label: 'Ventil-Rechnung', data: rows.map(r => r.phys ? null : r.v), backgroundColor: '#f97316', borderRadius: 4, barPercentage: .9, categoryPercentage: .7 },
-      { label: 'Wärmeverlust Bauphysik', data: rows.map(r => r.l), backgroundColor: '#64748b', borderRadius: 4, barPercentage: .9, categoryPercentage: .7 }] },
+      { label: 'Bauphysik netto (bei echter Außentemp., minus Sonne/Geräte)', data: rows.map(r => r.l), backgroundColor: '#64748b', borderRadius: 4, barPercentage: .9, categoryPercentage: .7 }] },
     options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, animation: false,
       plugins: { legend: { display: true, labels: { color: css('--mute'), boxWidth: 10, font: { size: 11 } } }, tooltip: { callbacks: { label: it => ' ' + it.dataset.label + ': ' + fmt(it.parsed.x, 1) + ' kWh' } } },
       scales: { x: { grid: { color: css('--line') }, ticks: { color: css('--mute') }, title: { display: true, text: 'kWh · ' + rangeLabel(), color: css('--mute') } }, y: { grid: { display: false }, ticks: { color: css('--ink') } } } } });
@@ -2070,11 +2080,11 @@ function renderCompare() {
     if (q == null) return '–';
     return q < 0.5 ? '⬇️ Ventil-Rechnung viel kleiner' : q > 1.6 ? '⬆️ Ventil-Rechnung viel größer' : '✅ passt';
   };
-  $('#cmpTable').innerHTML = '<tr><th>Raum</th><th class="n">Ventil</th><th class="n">Verlust</th><th class="n">Ø innen</th><th>Bewertung</th></tr>' +
-    rows.map(r => `<tr><td>${esc(r.n)}</td><td class="n">${r.phys ? '–' : fmt(r.v, 1)}</td><td class="n">${r.l != null ? fmt(r.l, 1) : '–'}</td>
+  $('#cmpTable').innerHTML = '<tr><th>Raum</th><th class="n">Messung</th><th class="n">Verlust brutto</th><th class="n">netto</th><th class="n">Ø innen</th><th>Bewertung</th></tr>' +
+    rows.map(r => `<tr><td>${esc(r.n)}</td><td class="n">${r.phys ? '–' : fmt(r.v, 1)}</td><td class="n">${r.g != null ? fmt(r.g, 1) : '–'}</td><td class="n">${r.l != null ? fmt(r.l, 1) : '–'}</td>
       <td class="n">${E.loss[r.n] && E.loss[r.n].ti != null ? fmt(E.loss[r.n].ti) + '°' : '–'}</td><td>${verdict(r)}</td></tr>`).join('');
-  $('#cmpNote').innerHTML = '<b>Ventil-Rechnung:</b> Heizkörperleistung × Ventilöffnung × Zeit (kalibriert am Zähler). <b>Bauphysik:</b> was laut Wänden, Fenstern und Lüftung bei der gemessenen Raum- und Außentemperatur verloren geht – ganz unabhängig von den Thermostaten. ' +
-    'Der Verlust ist meist etwas höher, weil Sonne, Personen, Geräte und Nachbarwohnungen mitheizen. Große Abweichungen zeigen, wo etwas nicht stimmt: Heizkörpergröße, Ventilschätzung oder Bauphysik-Angaben. Räume ohne Angaben unter Einstellungen → Bauphysik ergänzen.';
+  $('#cmpNote').innerHTML = '<b>Messung:</b> was die App aus Thermostaten/Fühlern errechnet (kalibriert am Zähler). <b>Bauphysik:</b> Verlust über Wände, Fenster und Lüftung – Stunde für Stunde mit der <b>tatsächlichen</b> Außen- und Raumtemperatur gerechnet (nicht mit −12 °C). <b>Netto</b> = brutto minus Sonne durch die Fenster und Wärme von Personen/Geräten; das muss die Heizung liefern. ' +
+    'Die große Heizlast-Zahl unter Einstellungen → Bauphysik gilt dagegen nur für den kältesten Auslegungstag. Bleibt netto deutlich über der Messung, heizen Rohre oder Nachbarn mit, oder die U-Werte sind zu schlecht angesetzt. Große Abweichungen zeigen, wo etwas nicht stimmt: Heizkörpergröße, Ventilschätzung oder Bauphysik-Angaben. Räume ohne Angaben unter Einstellungen → Bauphysik ergänzen.';
 }
 
 /* ---------- Wärmezähler-Panel ---------- */
@@ -2613,14 +2623,14 @@ const clsOf = e => e == null ? null : CLS.find(c => e < c[1]);
 function passCalc() {
   const Asum = PLAN.reduce((a, P) => a + P.a, 0), wfl = num(S.cfg.pass.wfl) || Asum, AN = wfl * 1.2;
   const kg = kgtNow(), ww = S.cfg.pass.ww ? 20 : 0;
-  const Q = kg ? kg.v * gLong() : null, eV = Q != null ? Q / AN + ww : null;
+  const Q = kg ? kg.v * gLong() : null, eV = Q != null ? Q / AN : null;
   const on = PLAN.filter(P => bpCfg(P).heat !== 'off'), has = on.filter(P => bpH(P).has);
   let B = null;
   if (has.length) {
     const H = has.reduce((a, P) => a + bpH(P).H, 0), win = has.reduce((a, P) => a + (num(bpCfg(P).win) || 0), 0), hd = LT.data ? LT.data.hd : 220;
     const Ql = H * gLong() * 24 / 1000, Qi = 5 * wfl * 24 * hd / 1000, Qs = win * 155 * 0.9 * 0.7 * 0.65;
     const Qh = Math.max(0, Ql - 0.95 * (Qi + Qs));
-    B = { H, Ql, Qi, Qs, Qh, e: Qh / AN + ww, full: has.length === on.length, n: has.length, of: on.length };
+    B = { H, Ql, Qi, Qs, Qh, e: Qh / AN, full: has.length === on.length, n: has.length, of: on.length };
   }
   const M = meterCalc();
   return { wfl, Asum, AN, kg, Q, eV, ww, B, fp: num(S.cfg.pass.fp), co2: num(S.cfg.pass.co2), M, cover: kg && kg.src === 'meter' ? kg.G / gLong() : 0 };
@@ -2646,8 +2656,9 @@ function renderPass() {
   if (p.kg) add('Kennwert', `${fmt(p.kg.v, 2)} kWh je Gradtag (${p.kg.src === 'meter' ? 'Zähler' : 'Schätzung'})`);
   add('Normjahr Gradtage G20/15', fmt(gLong(), 0) + (LT.data ? ` (${esc(S.cfg.loc.name || '')}, Ø 2001–2020)` : ' (Näherung)'));
   if (p.Q != null) add('Heizwärme im Normjahr', fmt(p.Q, 0) + ' kWh/a');
-  if (p.ww) add('Warmwasser (Pauschale)', '20 kWh/(m²·a)');
-  if (p.eV != null) add('<b>Endenergie Verbrauch</b>', fmt(p.eV, 0) + ' kWh/(m²·a)');
+  add('Warmwasser', 'Durchlauferhitzer (Strom) – nicht enthalten');
+  if (p.eV != null) add('<b>Endenergie Heizung</b>', fmt(p.eV, 0) + ' kWh/(m²·a)');
+  if (p.ww && p.eV != null) add('wie offizieller Ausweis (+20 Warmwasser-Pauschale)', fmt(p.eV + 20, 0) + ' kWh/(m²·a) · Klasse ' + (clsOf(p.eV + 20) || ['–'])[0]);
   if (p.eV != null && p.fp != null) add('Primärenergie', fmt(p.eV * p.fp, 0) + ' kWh/(m²·a) (f<sub>p</sub> ' + fmt(p.fp, 2) + ')');
   if (p.eV != null && p.co2 != null) add('CO₂', fmt(p.eV * p.co2 / 1000, 1) + ' kg/(m²·a) · ' + fmt(p.eV * p.AN * p.co2 / 1e6, 2) + ' t/a');
   if (p.Q != null && costOf(1) != null) add('Kosten im Normjahr', eur(costOf(p.Q) + (gp || 0)) + (gp ? ' inkl. Grundpreis' : ' (nur Arbeitspreis)'));
@@ -2658,7 +2669,7 @@ function renderPass() {
     <div class="sub">inoffiziell · angelehnt an den Energieverbrauchsausweis nach § 82 GEG · für die Wohnung, nicht das ganze Gebäude · Stand ${new Date().toLocaleDateString('de-DE')}</div>
     <div style="display:flex;gap:14px;align-items:center">
       <div class="big2" style="background:${c ? c[2] : 'var(--chip)'};color:#1f2937;border-radius:14px;min-width:64px;text-align:center;padding:4px 8px">${c ? c[0] : '–'}</div>
-      <div><b style="font-size:18px">${p.eV != null ? fmt(p.eV, 0) + ' kWh/(m²·a)' : 'noch kein Wert'}</b><br><span style="color:var(--mute);font-size:13px">Endenergie-Verbrauch${cB ? ` · Bedarf Klasse ${cB[0]}` : ''}</span></div></div>
+      <div><b style="font-size:18px">${p.eV != null ? fmt(p.eV, 0) + ' kWh/(m²·a)' : 'noch kein Wert'}</b><br><span style="color:var(--mute);font-size:13px">Endenergie Heizung (Verbrauch)${cB ? ` · Bedarf Klasse ${cB[0]}` : ''}</span></div></div>
     ${passScale(p.eV, p.B && p.B.full ? p.B.e : null)}
     <div style="font-size:13px;margin-top:4px">${q[0]} Datenbasis: ${q[1]}</div>
     <div class="kvp">${rows.join('')}</div>
@@ -3192,7 +3203,10 @@ function bpOut(P) {
   const learn = B ? `<br>Wärmespeicher ≈ ${fmt(B.C, 0)} Wh/(K·m²) ${B.cLearned ? '(aus deinen Messwerten gelernt)' : '(Standardwert – wird gelernt, sobald es genug Abkühl-Phasen gibt)'}` +
     (B.fremd ? ` · Fremdwärme ≈ <b>${fmt(B.qf, 0)} W</b>${B.qfN < 6 ? ' (noch zu wenig Daten)' : ''}` : '') +
     (B.hasDiff ? ' · Heizsignal aus Thermostat − Raumfühler ✓' : '') : '';
-  let o = `Wärmeverlust <b>${fmt(h.H, 0)} W/K</b> (Wand/Fenster/Decke ${fmt(h.HT, 0)}, Lüftung ${fmt(h.HV, 0)}) · Heizlast bei ${fmt(tn, 0)} °C und ${fmt(designTi(P), 0)} °C innen ≈ <b>${fmt(L, 0)} W</b> (${fmt(L / P.a, 0)} W/m²)`;
+  let o = `Wärmeverlust <b>${fmt(h.H, 0)} W/K</b> (Wand/Fenster/Decke ${fmt(h.HT, 0)}, Lüftung ${fmt(h.HV, 0)}) – also je 1 °C Unterschied innen/außen ${fmt(h.H, 0)} W`;
+  const toN = outsideAt(Date.now()), tiN = designTi(P);
+  if (toN != null) o += `<br>Jetzt bei ${fmt(toN)} °C außen, ${fmt(tiN, 0)} °C innen: ≈ <b>${fmt(Math.max(0, h.H * (tiN - toN)), 0)} W</b>`;
+  o += `<br>Heizlast am kältesten Tag (${fmt(tn, 0)} °C außen) ≈ <b>${fmt(L, 0)} W</b> (${fmt(L / P.a, 0)} W/m²) – zur Prüfung des Heizkörpers`;
   // reicht der Heizkörper?
   const tm = vlFor(tn) - (+S.cfg.heat.spread || 0) / 2, ti = designTi(P);
   let pn = 0, n = 1.3, Lc = L, scope = '';
@@ -3250,7 +3264,10 @@ function bpTotal() {
   if (!has.length) { $('#bpTot').innerHTML = 'Noch keine Angaben. Tipp: Raum aufklappen, Außenwand- und Fensterfläche eintragen – den Rest kann man auf den Vorgaben lassen.'; return; }
   const H = has.reduce((a, P) => a + bpH(P).H, 0), L = has.reduce((a, P) => a + bpLoad(P), 0), A = has.reduce((a, P) => a + P.a, 0);
   const M = meterCalc(), g = M.iv.filter(v => !v.bad && v.G), kgt = g.length ? g.reduce((a, v) => a + v.dk, 0) / g.reduce((a, v) => a + v.G, 0) : null;
-  $('#bpTot').innerHTML = `<b>Wohnung (${has.length} von ${on.length} Räumen mit Angaben, ${fmt(A, 0)} m²)</b><br>Wärmeverlust ${fmt(H, 0)} W/K · Heizlast ≈ <b>${fmt(L / 1000, 1)} kW</b> (${fmt(L / A, 0)} W/m²)` +
+  const toN = outsideAt(Date.now()), nowW = toN != null ? has.reduce((a, P) => a + bpH(P).H * Math.max(0, designTi(P) - toN), 0) : null;
+  $('#bpTot').innerHTML = `<b>Wohnung (${has.length} von ${on.length} Räumen mit Angaben, ${fmt(A, 0)} m²)</b><br>Wärmeverlust ${fmt(H, 0)} W/K` +
+    (nowW != null ? ` · jetzt bei ${fmt(toN)} °C außen ≈ <b>${fmt(nowW / 1000, 1)} kW</b>` : '') +
+    ` · am kältesten Tag (${fmt(num(S.cfg.bp.tNorm) ?? -12, 0)} °C) ≈ ${fmt(L / 1000, 1)} kW (${fmt(L / A, 0)} W/m²)` +
     `<br>Modell: ≈ ${fmt(H * 24 / 1000, 1)} kWh je Gradtag` + (kgt != null ? ` · Zähler: <b>${fmt(kgt, 1)} kWh je Gradtag</b>` +
       (has.length === on.length ? ` → Modell ${H * 24 / 1000 > kgt ? 'zu hoch' : 'zu niedrig'} um ${fmt(Math.abs(H * 24 / 1000 / kgt - 1) * 100, 0)} %` : '') : '') +
     '<br><span class="hint">Das Modell liegt meist etwas über dem Zähler, weil Sonne, Personen und Geräte mitheizen.</span>';
@@ -3336,10 +3353,54 @@ function setSpec(d) {
   return { min: sp.min != null ? sp.min / f : 5, max: sp.max != null ? sp.max / f : 30, step: sp.step ? sp.step / f : .5 };
 }
 
+/* Auswahl oben in der Detailansicht: ganzer Raum oder ein einzelnes Gerät */
+const roomFor = d => roomsList().find(R => R.sens.includes(d) || R.th.includes(d));
+function renderDTabs(R, cur) {
+  const devs = R ? R.sens.concat(R.th) : [];
+  $('#dTabs').innerHTML = devs.length < 2 ? '' :
+    `<button data-dt="room:${esc(R.name)}" class="${cur === 'room' ? 'on' : ''}">🏠 Ganzer Raum</button>` +
+    devs.map(d => `<button data-dt="${d.id}" class="${cur === d.id ? 'on' : ''}"><span class="dot" style="background:${colorOf(d.id)}"></span>${esc(String(d.name).trim())}<small style="opacity:.7">${isThermo(d) ? 'Thermostat' : 'Fühler'}</small></button>`).join('');
+}
+function openDetail(key) { pend = null; if (String(key).startsWith('room:')) detailRoom(key.slice(5)); else detail(key); if (!$('#detail').open) $('#detail').showModal(); }
+function detailRoom(name) {
+  const R = roomsList().find(x => x.name === name); if (!R) return;
+  S.open = 'room:' + name;
+  $('#dTitle').textContent = name; $('#dDot').style.background = 'var(--acc)';
+  renderDTabs(R, 'room');
+  const devs = R.sens.concat(R.th);
+  $('#dCtl').innerHTML = R.th.length ? '<div class="hint" style="margin-bottom:8px">Zum Einstellen der Solltemperatur oben ein Thermostat antippen.</div>' : '';
+  const hd = R.sens.find(d => d.hum != null), bn = balNow(name);
+  $('#dKv').innerHTML = devs.map(d => [String(d.name).trim() + (isThermo(d) ? ' (Thermostat)' : ''), (d.temp != null ? fmt(d.temp) + ' °C' : '–') + (d.hum != null ? ' · ' + fmt(d.hum, 0) + ' %' : '') + (isThermo(d) && d.set != null ? ' · Soll ' + fmt(d.set) : '') + (d.online ? '' : ' · offline')])
+    .concat(hd && hd.temp != null ? [['Taupunkt', fmt(dewPoint(hd.temp, hd.hum)) + ' °C'], ['Abs. Feuchte', fmt(absHum(hd.temp, hd.hum)) + ' g/m³']] : [])
+    .concat(bn ? [['Heizung (errechnet)', bn[1] > 0 ? 'an · ≈ ' + fmt(bn[1], 0) + ' W' : 'aus']] : [])
+    .map(([k, v]) => `<div><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('');
+  const E = S.en.rooms[name], B = S.en.bal && S.en.bal[name], L = S.en.loss && S.en.loss[name], st = [];
+  const allT = devs.flatMap(d => hist(d.id).map(p => p[1]).filter(v => v != null));
+  if (allT.length) st.push(['Min', fmt(Math.min(...allT)) + ' °C'], ['Max', fmt(Math.max(...allT)) + ' °C']);
+  if (E) st.push(['Energie', fmt(E.kwh * S.en.k) + ' kWh'], ['Heizstunden' + (B ? ' (errechnet)' : ''), fmt(E.heat)]);
+  if (L) st.push(['Bauphysik netto (bei echter Außentemp.)', fmt(L.net) + ' kWh'], ['Ø außen', L.to != null ? fmt(L.to) + ' °C' : '–']);
+  $('#dStats').innerHTML = st.map(([k, v]) => `<div><span>${k} (${rangeLabel()})</span><b>${v}</b></div>`).join('');
+  $('#dRaw').innerHTML = '<tr><td>–</td><td>Rohwerte beim einzelnen Gerät</td></tr>';
+  const ds = devs.filter(d => hist(d.id).some(p => p[1] != null)).map(d => ({ label: String(d.name).trim() + (isThermo(d) ? ' (Thermostat)' : R.th.length ? ' (Fühler)' : ''), borderColor: colorOf(d.id), backgroundColor: colorOf(d.id),
+    borderDash: isThermo(d) && R.sens.length ? [6, 3] : undefined, data: hist(d.id).filter(p => p[1] != null).map(p => ({ x: p[0], y: p[1] })), spanGaps: gap(), yAxisID: 'y' }));
+  const th = R.th.find(d => hist(d.id).some(p => p[2] != null));
+  if (th) ds.push({ label: 'Soll', borderColor: css('--mute'), borderDash: [2, 3], borderWidth: 1.5, stepped: true, tension: 0, data: hist(th.id).filter(p => p[2] != null).map(p => ({ x: p[0], y: p[2] })), spanGaps: gap(), yAxisID: 'y' });
+  const o = baseOpts();
+  o.plugins.legend = { display: true, labels: { color: css('--mute'), boxWidth: 12, font: { size: 11 } } };
+  if (B) {
+    ds.push({ label: 'Heizung an (errechnet)', unit: 'W', borderColor: '#fb923c', backgroundColor: '#fb923c33', fill: 'origin', stepped: true, tension: 0, borderWidth: 1, pointRadius: 0,
+      data: B.line.map(l => ({ x: l[0], y: l[2] === 'off' || l[2] === 'air' ? 0 : Math.round(l[1]) })), yAxisID: 'y1' });
+    const Lb = L; if (Lb && Lb.line.length) ds.push({ label: 'Bauphysik-Bedarf (Außentemp. − Sonne/Geräte)', unit: 'W', borderColor: '#64748b', borderDash: [4, 3], borderWidth: 1.5, pointRadius: 0, tension: .2, data: Lb.line.map(l => ({ x: l[0], y: Math.round(l[2]) })), yAxisID: 'y1' });
+    o.scales.y1 = { position: 'right', min: 0, grid: { display: false }, ticks: { color: css('--mute'), callback: v => fmt(v, 0) + ' W' } };
+  }
+  mk('dt', { type: 'line', data: { datasets: ds }, options: o });
+}
+
 function detail(id) {
   const d = S.data.devices.find(x => x.id === id); if (!d) return;
   const h = hist(id);
   S.open = id;
+  renderDTabs(roomFor(d), id);
   $('#dTitle').textContent = d.name; $('#dDot').style.background = colorOf(id);
 
   if (d.setCode && d.online) {
@@ -3376,7 +3437,7 @@ function detail(id) {
     st.push([e.bal ? 'Heizstunden (errechnet)' : 'Heizstunden', fmt(e.heat)]);
     st.push(['Energie', fmt(e.kwh * S.en.k) + ' kWh']);
     const L = S.en.loss[roomOf(d)];
-    if (L) st.push(['Verlust Raum (Bauphysik)', fmt(L.kwh) + ' kWh']);
+    if (L) st.push(['Bauphysik netto (bei echter Außentemp.)', fmt(L.net) + ' kWh']);
   }
   $('#dStats').innerHTML = st.map(([k, v]) => `<div><span>${k} (${rangeLabel()})</span><b>${v}</b></div>`).join('');
   $('#dRaw').innerHTML = Object.entries(d.raw || {}).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</td></tr>`).join('') || '<tr><td>–</td></tr>';
@@ -3393,6 +3454,8 @@ function detail(id) {
     const calc = B.line.map(l => ({ x: l[0], y: l[2] === 'heat' || l[2] === 'hold' ? Math.round(l[1]) : 0 }));
     if (B.hasDiff) ds.push({ label: 'Heizung an (sicher)', unit: 'W', borderColor: '#c2410c', backgroundColor: '#c2410c55', fill: 'origin', stepped: true, tension: 0, borderWidth: 1, data: sure, yAxisID: 'y1' });
     ds.push({ label: 'Heizung an (errechnet)', unit: 'W', borderColor: '#fb923c', backgroundColor: '#fb923c33', fill: 'origin', stepped: true, tension: 0, borderWidth: 1, data: calc, yAxisID: 'y1' });
+    const Lb = S.en.loss && S.en.loss[roomOf(d)];
+    if (Lb && Lb.line.length) ds.push({ label: 'Bauphysik-Bedarf (Außentemp. − Sonne/Geräte)', unit: 'W', borderColor: '#64748b', borderDash: [4, 3], borderWidth: 1.5, pointRadius: 0, tension: .2, data: Lb.line.map(l => ({ x: l[0], y: Math.round(l[2]) })), yAxisID: 'y1' });
   }
   const right = B ? 0 : vpts.length ? 3 : pts(4).length ? 4 : 0;
   const vLabel = { valve: 'Ventil', state: 'Ventil offen (Anteil)', proxy: 'Ventil (geschätzt)' }[src] || 'Ventil';
@@ -3616,8 +3679,8 @@ $('#plan').addEventListener('click', e => {
       toast(nm + ' · ' + fmt(P.a) + ' m²' + (b.heat === 'off' ? ' · nicht berechnet' : (b.rad.type || tiLog(P).length ? ' · ' + stufeTxt(tiAt(P, Date.now())) : '') + (E ? ' · ' + fmt(E.kwh * S.en.k, 0) + ' kWh (' + rangeLabel() + ')' : ''))); return; }
     toast(P.id + ' (' + fmt(P.a) + ' m²) – unter Einstellungen zuordnen oder benennen'); return;
   }
-  const d = R.sens.concat(R.th)[0]; if (!d) return;
-  pend = null; detail(d.id); $('#detail').showModal();
+  const devs = R.sens.concat(R.th); if (!devs.length) return;
+  openDetail(devs.length > 1 ? 'room:' + R.name : devs[0].id);
 });
 $('#roomOrder').addEventListener('click', e => {
   const b = e.target.closest('[data-mv]'); if (!b) return;
@@ -3677,8 +3740,12 @@ $('#tabs').onclick = e => { const b = e.target.closest('button'); if (!b) return
 $('#refresh').onclick = () => load('apiRefresh');
 $('#cfgBtn').onclick = openSettings;
 $('#cards').onclick = e => {
-  const r = e.target.closest('.rrow') || (e.target.closest('.card.room') && UI.tiles !== 'big' ? e.target.closest('.card.room').querySelector('.rrow') : null) || (e.target.closest('.card.room') && e.target.closest('.card.room').querySelector('.rrow'));
-  if (!r) return; pend = null; detail(r.dataset.id); $('#detail').showModal();
+  const r = e.target.closest('.rrow');
+  if (r) { openDetail(r.dataset.id); return; }
+  const card = e.target.closest('.card.room'); if (!card) return;
+  const rows = card.querySelectorAll('.rrow');
+  if (rows.length === 1) { openDetail(rows[0].dataset.id); return; }
+  if (card.dataset.room) openDetail('room:' + card.dataset.room);
 };
 $('#chips').onclick = e => {
   const c = e.target.closest('.chip'); if (!c) return; const id = c.dataset.id;
@@ -3686,6 +3753,7 @@ $('#chips').onclick = e => {
 };
 $$('[data-close]').forEach(b => b.onclick = () => b.closest('dialog').close());
 $('#detail').addEventListener('close', () => { if (pend != null) { clearTimeout(pendTimer); sendSet(); } S.open = null; });
+$('#dTabs').addEventListener('click', e => { const b = e.target.closest('[data-dt]'); if (!b) return; if (pend != null) { clearTimeout(pendTimer); sendSet(); } openDetail(b.dataset.dt); });
 $('#detail').addEventListener('change', e => { if (e.target.id === 'cMode') sendMode(e.target.value); });
 $('#mtSave').onclick = saveMeter;
 $('#uiP').addEventListener('change', e => {
@@ -4001,7 +4069,7 @@ function demoData(days) {
 load();
 </script>
 <script>
-window.APP_VERSION = 'heizung-v16';
+window.APP_VERSION = 'heizung-v17';
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
   let reloaded = false;
