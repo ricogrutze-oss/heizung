@@ -237,6 +237,8 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
 #wall .wx{position:fixed;top:12px;right:12px}
 #plan .we{stroke-linecap:round;cursor:pointer}
 #plan .wh{stroke:transparent;stroke-width:16;cursor:pointer}
+#plan.drawing{touch-action:none;cursor:crosshair}
+#plan .pipe{fill:none;stroke:#dc2626;stroke-width:5;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:1 9}
 .pm{display:grid;grid-template-columns:34px 1fr 74px;gap:6px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line);font-size:13px}
 .pm b{font-size:12px;background:var(--chip);border-radius:6px;text-align:center;padding:4px 0}
 .pm small{display:block;color:var(--mute);font-size:11px}
@@ -452,6 +454,10 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
       <div class="hint" style="margin-bottom:10px">0 = N · 90 = O · 180 = S · 270 = W</div></div>
     <p class="hint" style="margin:0">Tipp: In Google Maps (Satellit) nachsehen, wohin die Straßenseite zeigt. Dann jede Wand antippen und ihre Art wählen. Außenwände bekommen ihre Fenster mit Verschattung. Die Himmelsrichtung jeder Wand rechnet die App selbst aus.</p>
     <div class="leg" id="wLeg"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+      <button class="btn sec" id="pipeDraw" style="padding:8px 12px;font-size:14px">🖊 Heizungsrohr zeichnen</button>
+      <button class="btn sec" id="pipeDel" style="padding:8px 12px;font-size:14px">🗑 Rohr löschen</button></div>
+    <p class="hint" id="pipeHint" style="margin:6px 0 0">Rohre, die unten an der Wand entlanglaufen, mit dem Finger nachzeichnen. Wo ein Rohr an einer Außenecke vorbeiführt, überwacht die App die obere Ecke statt der unteren.</p>
   </div>
   <section class="panel" style="margin-top:0;padding:8px">
     <svg id="plan" viewBox="805 25 575 995" preserveAspectRatio="xMidYMid meet"></svg>
@@ -2188,11 +2194,46 @@ async function saveMeter() {
 /* ===================================================================
  * Analyse
  * =================================================================== */
+/* ---------- Außenecken automatisch aus dem Grundriss ---------- */
+const CORNER_DF = 0.12;   // Außenecke ≈ 0,12 kälter (Temperaturfaktor) als die Wandfläche – Schätzung für ungedämmtes Mauerwerk
+const pxScale = P => Math.sqrt(P.a / polyArea(P.pts));   // m je Plan-Pixel
+function distSeg(px, py, a, b) { const dx = b[0] - a[0], dy = b[1] - a[1], l = dx * dx + dy * dy; let t = l ? ((px - a[0]) * dx + (py - a[1]) * dy) / l : 0; t = Math.max(0, Math.min(1, t)); return Math.hypot(px - a[0] - t * dx, py - a[1] - t * dy); }
+function nearPipe(x, y, maxPx) { return (S.cfg.pipes || []).some(pp => pp.pts.some((p, i) => i > 0 && distSeg(x, y, pp.pts[i - 1], p) <= maxPx)); }
+function autoCorners() {
+  const out = [];
+  PLAN.forEach(P => {
+    const ws = wallsOf(P), n = ws.length, c = centroid(P.pts), sc = pxScale(P);
+    for (let i = 0; i < n; i++) {
+      const a = ws[(i - 1 + n) % n], b = ws[i];   // Ecke am Punkt P.pts[i] zwischen Wand i−1 und Wand i
+      if (a.type !== 'ext' || b.type !== 'ext') continue;
+      const [vx, vy] = P.pts[i];
+      // nur echte Außenecken (konvex) – Innenecken eines L-förmigen Raums sind warm
+      const pr = P.pts[(i - 1 + n) % n], nx = P.pts[(i + 1) % n];
+      const cross = (vx - pr[0]) * (nx[1] - vy) - (vy - pr[1]) * (nx[0] - vx);
+      const orient = P.pts.reduce((s2, p, j) => { const q = P.pts[(j + 1) % n]; return s2 + p[0] * q[1] - q[0] * p[1]; }, 0);
+      if (cross * orient <= 0) continue;
+      const pipe = nearPipe(vx, vy, 0.6 / sc);
+      const f = Math.max(0.3, fRsiWall((a.U + b.U) / 2) - CORNER_DF);
+      const k = 22 / Math.hypot(c[0] - vx, c[1] - vy);
+      const x = vx + (c[0] - vx) * k, y = vy + (c[1] - vy) * k;
+      // schon eine eigene Messung in der Nähe (60 cm)? Dann ersetzt die Messung die Schätzung
+      if ((S.cfg.spots || []).some(sp => sp.P === P.id && Math.hypot(sp.x - x, sp.y - y) * sc < 0.6)) continue;
+      out.push({ id: 'auto-' + P.id + '-' + i, P: P.id, x: Math.round(x), y: Math.round(y), f, auto: true, pipe,
+        name: 'Ecke ' + (pipe ? 'oben (Rohr unten)' : 'unten') + ' ' + dirName(a.az) + '/' + dirName(b.az) });
+    }
+  });
+  return out;
+}
+
 function renderMould() {
   const rows = [];
   (S.cfg.spots || []).forEach(sp => {
     const st = spotStats(sp);
     rows.push({ k: '📍 ' + (sp.name || 'Messstelle'), sub: (st.R ? st.R.name : '') + (sp.f != null ? ' · fRsi ' + fmt(sp.f, 2) + ' (gemessen)' : ''), st, spot: sp.id });
+  });
+  autoCorners().forEach(sp => {
+    const st = spotStats(sp);
+    rows.push({ k: '📐 ' + sp.name, sub: (st.R ? st.R.name : '') + ' · fRsi ≈ ' + fmt(sp.f, 2) + ' (geschätzt – zum Einmessen antippen)', st, auto: sp });
   });
   PLAN.forEach(P => wallStats(P).forEach(({ w, st }) => rows.push({ k: '🧱 ' + bpName(P) + ' – Wand ' + dirName(w.az), sub: (WALLS[w.uk] ? WALLS[w.uk][0] : w.uk === 'room' ? 'Aufbau wie Raum' : 'eigener U') + ' · fRsi ' + fmt(fRsiWall(w.U), 2) + ' (berechnet)', st })));
   const real = rows.filter(r => !r.st.err).sort((a, b) => b.st.lvl - a.st.lvl || b.st.now - a.st.now);
@@ -2203,7 +2244,7 @@ function renderMould() {
       <small>${esc(r.sub)}</small>
       <small>jetzt: Oberfläche ${fmt(st.ts)} °C · <b>${fmt(st.now, 0)} %</b> Feuchte an der Oberfläche · Taupunkt ${fmt(st.dp)} °C (${st.ts - st.dp >= 0 ? fmt(st.ts - st.dp) + ' K Abstand' : 'Tauwasser!'})</small>
       <small>heute ${fmt(st.h80Today, 1)} h über 80 %${st.h100Today ? ' · ' + fmt(st.h100Today, 1) + ' h Tauwasser' : ''}${st.avg80 != null ? ` · Ø ${fmt(st.avg80, 1)} h/Tag über 80 % (letzte ${st.days} Tage)` : ''}${st.tau ? ' · Tauwasser im Zeitraum: ' + fmt(st.tau, 1) + ' h' : ''}</small>
-      ${r.spot ? `<button class="lnk" data-spotedit="${r.spot}">bearbeiten</button>` : ''}</div></div>`;
+      ${r.spot ? `<button class="lnk" data-spotedit="${r.spot}">bearbeiten</button>` : r.auto ? `<button class="lnk" data-spotauto="${r.auto.id}">jetzt einmessen</button>` : ''}</div></div>`;
   }).join('') || '<div class="hint">Noch keine Werte. Außenwände im Plan unter ✏️ Wände &amp; Fenster markieren oder eine 📍 Messstelle setzen.</div>') +
     (errs.length ? '<div class="hint" style="margin-top:6px">' + errs.map(r => esc(r.k) + ': ' + esc(r.st.err)).join('<br>') + '</div>' : '') +
     (S.range < 7 ? '<div class="hint" style="margin-top:6px">Für den Tagesdurchschnitt oben mindestens 7 Tage wählen.</div>' : '');
@@ -2261,11 +2302,19 @@ $('#spDel').onclick = () => {
   S.cfg.spots = (S.cfg.spots || []).filter(x => x.id !== spotCur.id);
   $('#spotDlg').close(); markDirty(); if (S.tab === 'pl') renderPlan(); if (S.tab === 'an') renderMould();
 };
-$('#mouldList').addEventListener('click', e => { const b = e.target.closest('[data-spotedit]'); if (!b) return; const sp = (S.cfg.spots || []).find(x => x.id === b.dataset.spotedit); if (sp) openSpot(sp); });
+$('#mouldList').addEventListener('click', e => {
+  const au = e.target.closest('[data-spotauto]');
+  if (au) { const sp = autoCorners().find(x => x.id === au.dataset.spotauto); if (sp) openSpot({ id: 's' + Date.now().toString(36), P: sp.P, x: sp.x, y: sp.y, name: sp.name, isNew: true }); return; }
+  const b = e.target.closest('[data-spotedit]'); if (!b) return; const sp = (S.cfg.spots || []).find(x => x.id === b.dataset.spotedit); if (sp) openSpot(sp); });
 const inPoly = (x, y, pts) => { let c = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const [xi, yi] = pts[i], [xj, yj] = pts[j]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; } return c; };
 function svgPoint(e) { const svg = $('#plan'), pt = svg.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY; return pt.matrixTransform(svg.getScreenCTM().inverse()); }
 function spotPins() {
-  return (S.cfg.spots || []).map(sp => {
+  const pipes = (S.cfg.pipes || []).map(pp => `<polyline class="pipe" data-pipe="${pp.id}" points="${pp.pts.map(p => p.join(',')).join(' ')}"><title>Heizungsrohr</title></polyline>`).join('');
+  const autos = autoCorners().map(sp => {
+    const st = spotStats(sp), col = st.err ? '#94a3b8' : LVL[st.lvl][0];
+    return `<g data-auto="${sp.id}" style="cursor:pointer"><circle cx="${sp.x}" cy="${sp.y}" r="10" fill="var(--card)" stroke="${col}" stroke-width="3" stroke-dasharray="4 3"/><text x="${sp.x}" y="${sp.y + 4}" text-anchor="middle" style="font-size:10px;font-weight:700;fill:${col}">${st.err ? '?' : fmt(st.now, 0)}</text><title>${esc(sp.name)} – geschätzt${st.err ? '' : ': ' + fmt(st.now, 0) + ' % an der Oberfläche'}. Antippen zum Einmessen.</title></g>`;
+  }).join('');
+  return pipes + autos + (S.cfg.spots || []).map(sp => {
     const st = spotStats(sp), col = st.err ? '#94a3b8' : LVL[st.lvl][0];
     return `<g data-spot="${sp.id}" style="cursor:pointer"><circle cx="${sp.x}" cy="${sp.y}" r="13" fill="${col}" stroke="#fff" stroke-width="3"/><text x="${sp.x}" y="${sp.y + 5}" text-anchor="middle" style="font-size:13px;font-weight:800;fill:#fff">${st.err ? '?' : fmt(st.now, 0)}</text><title>${esc(sp.name)}${st.err ? '' : ': ' + fmt(st.now, 0) + ' % an der Oberfläche'}</title></g>`;
   }).join('');
@@ -3429,7 +3478,39 @@ $('#ntfyGen').onclick = () => {
   toast('Thema erzeugt – jetzt speichern und in ntfy abonnieren');
 };
 $('#plMode').onclick = e => { const b = e.target.closest('button'); if (!b) return; plMode = b.dataset.m; store.set('heizdash.plMode', plMode); renderPlan(); };
-$('#plEdit').onclick = () => { plEdit = !plEdit; spotMode = false; renderPlan(); };
+$('#plEdit').onclick = () => { plEdit = !plEdit; spotMode = false; setPipeMode(false); renderPlan(); };
+let pipeMode = false, pipeDelMode = false, pipeCur = null;
+function setPipeMode(on) {
+  pipeMode = on; $('#plan').classList.toggle('drawing', on);
+  $('#pipeDraw').textContent = on ? '✓ Zeichnen beenden' : '🖊 Heizungsrohr zeichnen';
+  $('#pipeHint').textContent = on ? 'Mit dem Finger am Rohr entlangfahren. Mehrere Rohre nacheinander möglich. Zum Schluss „Zeichnen beenden“.' : 'Rohre, die unten an der Wand entlanglaufen, mit dem Finger nachzeichnen. Wo ein Rohr an einer Außenecke vorbeiführt, überwacht die App die obere Ecke statt der unteren.';
+}
+$('#pipeDraw').onclick = () => { setPipeMode(!pipeMode); pipeDelMode = false; $('#pipeDel').textContent = '🗑 Rohr löschen'; };
+$('#pipeDel').onclick = () => { pipeDelMode = !pipeDelMode; setPipeMode(false); $('#pipeDel').textContent = pipeDelMode ? '✕ abbrechen' : '🗑 Rohr löschen'; if (pipeDelMode) toast('Jetzt ein Rohr antippen'); };
+$('#plan').addEventListener('pointerdown', e => {
+  if (!pipeMode) return;
+  e.preventDefault(); const p = svgPoint(e); pipeCur = [[Math.round(p.x), Math.round(p.y)]];
+  $('#plan').setPointerCapture(e.pointerId);
+});
+$('#plan').addEventListener('pointermove', e => {
+  if (!pipeMode || !pipeCur) return;
+  const p = svgPoint(e), l = pipeCur[pipeCur.length - 1];
+  if (Math.hypot(p.x - l[0], p.y - l[1]) < 6) return;
+  pipeCur.push([Math.round(p.x), Math.round(p.y)]);
+  let el = $('#pipeLive'); if (!el) { el = document.createElementNS('http://www.w3.org/2000/svg', 'polyline'); el.id = 'pipeLive'; el.setAttribute('class', 'pipe'); $('#plan').appendChild(el); }
+  el.setAttribute('points', pipeCur.map(q => q.join(',')).join(' '));
+});
+$('#plan').addEventListener('pointerup', () => {
+  if (!pipeMode || !pipeCur) return;
+  const pts = pipeCur; pipeCur = null;
+  if (pts.length < 2 || Math.hypot(pts[0][0] - pts[pts.length - 1][0], pts[0][1] - pts[pts.length - 1][1]) < 10) { renderPlan(); return; }
+  // Linie vereinfachen: Punkte, die fast auf einer Geraden liegen, weglassen
+  const simp = [pts[0]];
+  for (let i = 1; i < pts.length - 1; i++) if (distSeg(pts[i][0], pts[i][1], simp[simp.length - 1], pts[i + 1]) > 3) simp.push(pts[i]);
+  simp.push(pts[pts.length - 1]);
+  S.cfg.pipes = (S.cfg.pipes || []).concat([{ id: 'r' + Date.now().toString(36), pts: simp }]);
+  markDirty(); renderPlan();
+});
 $('#plSpot').onclick = () => { spotMode = !spotMode; $('#plSpot').textContent = spotMode ? '✕ abbrechen' : '📍 Messstelle'; if (spotMode) toast('Jetzt auf die Stelle im Plan tippen'); };
 $('#northIn').addEventListener('input', e => { S.cfg.orient = Object.assign({}, S.cfg.orient, { north: num(e.target.value) || 0 }); markDirty(); renderPlan(); });
 let wdCur = null;
@@ -3447,6 +3528,14 @@ $('#wdSave').onclick = () => {
   $('#wallDlg').close(); markDirty(); renderPlan();
 };
 $('#plan').addEventListener('click', e => {
+  if (pipeMode) return;
+  const pd = e.target.closest('[data-pipe]');
+  if (pd && pipeDelMode) {
+    S.cfg.pipes = (S.cfg.pipes || []).filter(x => x.id !== pd.dataset.pipe); pipeDelMode = false; $('#pipeDel').textContent = '🗑 Rohr löschen';
+    markDirty(); renderPlan(); toast('Rohr gelöscht'); return;
+  }
+  const au = e.target.closest('[data-auto]');
+  if (au && !spotMode) { const sp = autoCorners().find(x => x.id === au.dataset.auto); if (sp) openSpot({ id: 's' + Date.now().toString(36), P: sp.P, x: sp.x, y: sp.y, name: sp.name, isNew: true }); return; }
   const pin = e.target.closest('[data-spot]');
   if (pin && !spotMode) { const sp = (S.cfg.spots || []).find(x => x.id === pin.dataset.spot); if (sp) openSpot(sp); return; }
   if (spotMode) {
@@ -3731,7 +3820,7 @@ const DS = {
   cfg: { spots: [{ id: 'sdemo', P: 'P3', x: 1018, y: 202, name: 'Ecke am Balkon-Träger', ts: 13.2, t: Date.now() - 2 * 864e5, ti: 20.3, to: 6, f: 0.503 }], bp: { tNorm: -12, limit: 15 }, cost: { ap: 14.5, gp: 420 }, pass: { year: 1910, fp: 0.6, co2: 180, ww: false },
     measures: [{ t: Date.now() - 10 * 864e5, name: 'Fensterdichtungen erneuert', room: 'Gästezimmer' }],
     plan: { P2: { bp: { name: 'Flur', ext: 0, win: 0, unh: 4 } }, P4: { bp: { name: 'Abstellraum', heat: 'off' } },
-      P1: { room: 'Wohnzimmer', bp: { ext: 14, win: 5.5 } }, P3: { room: 'Arbeitszimmer', bp: { fremd: true }, walls: { 0: { t: 'ext', win: 2.5, sh: 'free' }, 1: { t: 'nb' } } }, P5: { room: 'Bad' }, P8: { room: 'Küche' }, P9: { room: 'Gästezimmer', bp: { ext: 10, win: 2.6, ti: 18, rad: { type: '22', h: 600, w: 800, count: 1 } } },
+      P1: { room: 'Wohnzimmer', bp: { ext: 14, win: 5.5 } }, P3: { room: 'Arbeitszimmer', bp: { fremd: true }, walls: { 0: { t: 'ext', win: 2.5, sh: 'free' }, 1: { t: 'nb' }, 3: { t: 'ext' } } }, P5: { room: 'Bad' }, P8: { room: 'Küche' }, P9: { room: 'Gästezimmer', bp: { ext: 10, win: 2.6, ti: 18, rad: { type: '22', h: 600, w: 800, count: 1 } } },
       P10: { bp: { name: 'Schlafzimmer', ext: 9, win: 2.2, ti: 16, tiLog: [[Date.now() - 6 * 864e5, 20], [Date.now() - 2 * 864e5, 18]], rad: { type: '21', h: 600, w: 1000, count: 1 } } }, P11: { room: 'Jutta' }, P12: { room: 'Ilse' }, P13: { room: 'Bad Ilse' } },
     heat: { mode: 'curve', vl: 55, spread: 10, t1: -10, v1: 65, t2: 15, v2: 35, outside: 's0' },
     devices: {
@@ -3862,7 +3951,7 @@ function demoData(days) {
 load();
 </script>
 <script>
-window.APP_VERSION = 'heizung-v14';
+window.APP_VERSION = 'heizung-v15';
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
   let reloaded = false;
