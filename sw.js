@@ -2,7 +2,7 @@
  * App-Seite: erst Netz, bei Offline aus dem Cache (Updates kommen so automatisch an).
  * Chart.js und Icons: aus dem Cache.
  * Daten (Google Script, Wetter, ntfy) werden NIE zwischengespeichert. */
-const VERSION = 'heizung-v15';
+const VERSION = 'heizung-v16';
 const CORE = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable.png',
   'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js'];
 

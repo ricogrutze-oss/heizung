@@ -456,7 +456,8 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
     <div class="leg" id="wLeg"></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
       <button class="btn sec" id="pipeDraw" style="padding:8px 12px;font-size:14px">🖊 Heizungsrohr zeichnen</button>
-      <button class="btn sec" id="pipeDel" style="padding:8px 12px;font-size:14px">🗑 Rohr löschen</button></div>
+      <button class="btn sec" id="pipeDel" style="padding:8px 12px;font-size:14px">🗑 Rohr löschen</button>
+      <button class="btn sec" id="wallSplit" style="padding:8px 12px;font-size:14px">✂️ Wand teilen</button></div>
     <p class="hint" id="pipeHint" style="margin:6px 0 0">Rohre, die unten an der Wand entlanglaufen, mit dem Finger nachzeichnen. Wo ein Rohr an einer Außenecke vorbeiführt, überwacht die App die obere Ecke statt der unteren.</p>
   </div>
   <section class="panel" style="margin-top:0;padding:8px">
@@ -715,7 +716,7 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
         <label>Verschattung<select id="wdSh"></select></label></div>
       <p class="hint" style="margin-top:0">Fensterfläche inkl. Rahmen, alle Fenster dieser Wand zusammen. Verschattung: frei = freie Sicht zum Himmel · teilweise = Bäume/Balkon darüber · stark = dicht vor Bäumen oder Nachbarhaus.</p>
     </div>
-    <p style="display:flex;gap:8px"><button class="btn" id="wdSave">Übernehmen</button><button class="btn sec" data-close>Abbrechen</button></p>
+    <p style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="wdSave">Übernehmen</button><button class="btn sec" id="wdUnsplit">Teilung aufheben</button><button class="btn sec" data-close>Abbrechen</button></p>
   </div>
 </dialog>
 <dialog id="spotDlg">
@@ -1430,9 +1431,20 @@ const dirName = a => DIRS[Math.round(((a % 360) + 360) % 360 / 22.5) % 16];
 const northDeg = () => num(S.cfg.orient && S.cfg.orient.north) || 0;   // wohin „oben im Plan“ zeigt (0 = Norden)
 function wallsOf(P) {
   const pts = P.pts, c = centroid(pts), scale = Math.sqrt(P.a / polyArea(pts));
-  const h = num(planCfg(P.id).h) || num(S.cfg.planH) || 3, cfgW = planCfg(P.id).walls || {};
-  return pts.map((p, i) => {
-    const q = pts[(i + 1) % pts.length], dx = q[0] - p[0], dy = q[1] - p[1], len = Math.hypot(dx, dy) * scale;
+  const h = num(planCfg(P.id).h) || num(S.cfg.planH) || 3, cfgW = planCfg(P.id).walls || {}, splits = planCfg(P.id).splits || {};
+  // Wände können geteilt sein (z.B. halb Außenwand, halb Innenwand): Teilstücke „i.0“, „i.1“ …
+  const segs = [];
+  pts.forEach((p0, i) => {
+    const q0 = pts[(i + 1) % pts.length], fr = (splits[i] || []).filter(f => f > 0 && f < 1).sort((a, b) => a - b);
+    const cuts = [0].concat(fr, [1]);
+    for (let k = 0; k < cuts.length - 1; k++) {
+      const a = cuts[k], b = cuts[k + 1];
+      segs.push({ key: fr.length ? i + '.' + k : String(i), edge: i,
+        p: [p0[0] + (q0[0] - p0[0]) * a, p0[1] + (q0[1] - p0[1]) * a], q: [p0[0] + (q0[0] - p0[0]) * b, p0[1] + (q0[1] - p0[1]) * b] });
+    }
+  });
+  return segs.map(sg => {
+    const i = sg.key, p = sg.p, q = sg.q, dx = q[0] - p[0], dy = q[1] - p[1], len = Math.hypot(dx, dy) * scale;
     let nx = dy, ny = -dx;                                     // Normale; nach außen drehen (weg vom Raummittelpunkt)
     const mx = (p[0] + q[0]) / 2, my = (p[1] + q[1]) / 2;
     if ((mx - c[0]) * nx + (my - c[1]) * ny < 0) { nx = -nx; ny = -ny; }
@@ -1440,7 +1452,7 @@ function wallsOf(P) {
     const az = ((northDeg() + planBearing) % 360 + 360) % 360;
     const w = cfgW[i] || {}, b = bpCfg(P), uk = w.u || 'room';
     const U = uk === 'room' ? uOf(WALLS, b.wallT, b.wallU) : uOf(WALLS, uk, w.uo);
-    return { i, p, q, mx, my, len, area: len * h, az, type: w.t || 'in', win: num(w.win) || 0, sh: w.sh || 'free', uk, uo: w.uo, U };
+    return { i, edge: sg.edge, p, q, mx, my, len, area: len * h, az, type: w.t || 'in', win: num(w.win) || 0, sh: w.sh || 'free', uk, uo: w.uo, U };
   });
 }
 const wallsDefined = P => Object.values(planCfg(P.id).walls || {}).some(w => w && w.t && w.t !== 'in');
@@ -2203,15 +2215,15 @@ function autoCorners() {
   const out = [];
   PLAN.forEach(P => {
     const ws = wallsOf(P), n = ws.length, c = centroid(P.pts), sc = pxScale(P);
+    const orient = P.pts.reduce((s2, p, j) => { const q = P.pts[(j + 1) % P.pts.length]; return s2 + p[0] * q[1] - q[0] * p[1]; }, 0);
     for (let i = 0; i < n; i++) {
-      const a = ws[(i - 1 + n) % n], b = ws[i];   // Ecke am Punkt P.pts[i] zwischen Wand i−1 und Wand i
+      const a = ws[(i - 1 + n) % n], b = ws[i];   // Ecke am Anfang von Wandstück i
       if (a.type !== 'ext' || b.type !== 'ext') continue;
-      const [vx, vy] = P.pts[i];
-      // nur echte Außenecken (konvex) – Innenecken eines L-förmigen Raums sind warm
-      const pr = P.pts[(i - 1 + n) % n], nx = P.pts[(i + 1) % n];
+      const [vx, vy] = b.p;
+      // nur echte Außenecken (konvex) – Innenecken und Teilungspunkte auf gerader Wand zählen nicht
+      const pr = a.p, nx = b.q;
       const cross = (vx - pr[0]) * (nx[1] - vy) - (vy - pr[1]) * (nx[0] - vx);
-      const orient = P.pts.reduce((s2, p, j) => { const q = P.pts[(j + 1) % n]; return s2 + p[0] * q[1] - q[0] * p[1]; }, 0);
-      if (cross * orient <= 0) continue;
+      if (cross * orient <= 0 || Math.abs(cross) < 1) continue;
       const pipe = nearPipe(vx, vy, 0.6 / sc);
       const f = Math.max(0.3, fRsiWall((a.U + b.U) / 2) - CORNER_DF);
       const k = 22 / Math.hypot(c[0] - vx, c[1] - vy);
@@ -3070,12 +3082,14 @@ function renderPlanEdit() {
   PLAN.forEach(P => wallsOf(P).forEach(w => {
     const col = WTYPE[w.type][1], ext = w.type !== 'in';
     svg += `<line class="we" x1="${w.p[0]}" y1="${w.p[1]}" x2="${w.q[0]}" y2="${w.q[1]}" stroke="${col}" stroke-width="${ext ? 7 : 2}" ${ext ? '' : 'stroke-dasharray="6 5"'}/>
-      <line class="wh" data-we="${P.id}|${w.i}" x1="${w.p[0]}" y1="${w.p[1]}" x2="${w.q[0]}" y2="${w.q[1]}"><title>${P.id} Wand ${w.i + 1}: ${WTYPE[w.type][0]} · ${fmt(w.len)} m · zeigt nach ${dirName(w.az)}</title></line>`;
+      <line class="wh" data-we="${P.id}|${w.i}" x1="${w.p[0]}" y1="${w.p[1]}" x2="${w.q[0]}" y2="${w.q[1]}"><title>${P.id} Wand ${w.edge + 1}${String(w.i).includes('.') ? ' Teil ' + (+String(w.i).split('.')[1] + 1) : ''}: ${WTYPE[w.type][0]} · ${fmt(w.len)} m · zeigt nach ${dirName(w.az)}</title></line>`;
     if (w.type === 'ext' && w.win) {
       const [cx, cy] = centroid(P.pts), k = 16 / Math.hypot(cx - w.mx, cy - w.my);
       svg += `<text class="ps" x="${w.mx + (cx - w.mx) * k}" y="${w.my + (cy - w.my) * k + 4}" style="font-size:13px">🪟${fmt(w.win, 1)}${w.sh !== 'free' ? (w.sh === 'part' ? '◐' : '●') : ''}</text>`;
     }
   }));
+  // Teilungspunkte markieren
+  PLAN.forEach(P => wallsOf(P).forEach(w => { if (String(w.i).endsWith('.0')) return; if (String(w.i).includes('.')) svg += `<circle cx="${w.p[0]}" cy="${w.p[1]}" r="4" fill="var(--ink)"/>`; }));
   // Nordpfeil
   const n = -northDeg();
   svg += `<g transform="translate(1340 70) rotate(${n})"><circle r="24" fill="var(--card)" stroke="var(--line)"/><path d="M0,-18 L7,6 L0,1 L-7,6 Z" fill="#ef4444"/><text y="-24" style="font-size:13px;font-weight:700;fill:var(--ink)" text-anchor="middle">N</text></g>`;
@@ -3479,7 +3493,41 @@ $('#ntfyGen').onclick = () => {
 };
 $('#plMode').onclick = e => { const b = e.target.closest('button'); if (!b) return; plMode = b.dataset.m; store.set('heizdash.plMode', plMode); renderPlan(); };
 $('#plEdit').onclick = () => { plEdit = !plEdit; spotMode = false; setPipeMode(false); renderPlan(); };
-let pipeMode = false, pipeDelMode = false, pipeCur = null;
+let pipeMode = false, pipeDelMode = false, pipeCur = null, splitMode = false;
+$('#wallSplit').onclick = () => { splitMode = !splitMode; setPipeMode(false); $('#wallSplit').textContent = splitMode ? '✕ abbrechen' : '✂️ Wand teilen'; if (splitMode) toast('Jetzt genau dort auf die Wand tippen, wo sie geteilt werden soll'); };
+function splitWall(pid, edge, pt) {
+  const P = PLAN.find(x => x.id === pid), p0 = P.pts[edge], q0 = P.pts[(edge + 1) % P.pts.length];
+  const dx = q0[0] - p0[0], dy = q0[1] - p0[1], L2 = dx * dx + dy * dy, sc = pxScale(P), lenM = Math.sqrt(L2) * sc;
+  let t = ((pt.x - p0[0]) * dx + (pt.y - p0[1]) * dy) / L2;
+  t = Math.round(t * lenM * 10) / 10 / lenM;   // auf 10 cm runden
+  S.cfg.plan = S.cfg.plan || {};
+  const pc = S.cfg.plan[pid] || (S.cfg.plan[pid] = {}), sp = pc.splits || (pc.splits = {}), cur = sp[edge] || [];
+  if (t * lenM < 0.2 || (1 - t) * lenM < 0.2 || cur.some(f => Math.abs(f - t) * lenM < 0.2)) { toast('Zu nah an einer Ecke oder einer anderen Teilung'); return; }
+  // bisherige Einstellung der ganzen Wand bzw. des getroffenen Stücks auf beide neuen Stücke übertragen
+  const before = wallsOf(P).filter(w => w.edge === edge), ws = pc.walls || (pc.walls = {});
+  const fr = cur.concat([t]).sort((a, b) => a - b), cutsOld = [0].concat(cur.slice().sort((a, b) => a - b), [1]), cutsNew = [0].concat(fr, [1]);
+  const newCfg = {};
+  for (let k = 0; k < cutsNew.length - 1; k++) {
+    const mid = (cutsNew[k] + cutsNew[k + 1]) / 2, ok = cutsOld.findIndex((c, j) => j < cutsOld.length - 1 && mid >= c && mid <= cutsOld[j + 1]);
+    const old = before[ok] ? ws[before[ok].i] : null;
+    if (old) newCfg[edge + '.' + k] = Object.assign({}, old, { win: 0 });   // Fenster bitte je Stück neu eintragen
+  }
+  before.forEach(w => { delete ws[w.i]; });
+  Object.assign(ws, newCfg);
+  sp[edge] = fr;
+  markDirty(); renderPlan();
+  toast('Wand geteilt bei ' + fmt(t * lenM, 1) + ' m – jetzt die Stücke einzeln antippen');
+}
+$('#wdUnsplit').onclick = () => {
+  if (!wdCur) return;
+  const P = PLAN.find(x => x.id === wdCur.P), w = wallsOf(P).find(x => x.i === wdCur.i), pc = S.cfg.plan[wdCur.P];
+  if (!pc || !pc.splits || !pc.splits[w.edge]) { toast('Diese Wand ist nicht geteilt'); return; }
+  const first = (pc.walls || {})[w.edge + '.0'];
+  Object.keys(pc.walls || {}).filter(k => k.split('.')[0] === String(w.edge) && k.includes('.')).forEach(k => delete pc.walls[k]);
+  if (first) pc.walls[w.edge] = first;
+  delete pc.splits[w.edge];
+  $('#wallDlg').close(); markDirty(); renderPlan();
+};
 function setPipeMode(on) {
   pipeMode = on; $('#plan').classList.toggle('drawing', on);
   $('#pipeDraw').textContent = on ? '✓ Zeichnen beenden' : '🖊 Heizungsrohr zeichnen';
@@ -3546,9 +3594,11 @@ $('#plan').addEventListener('click', e => {
   }
   const we = e.target.closest('[data-we]');
   if (we) {
-    const [pid, i] = we.dataset.we.split('|'), P = PLAN.find(x => x.id === pid), w = wallsOf(P)[+i];
-    wdCur = { P: pid, i: +i };
-    $('#wdTitle').textContent = (bpName(P) === pid ? pid : bpName(P) + ' (' + pid + ')') + ' – Wand ' + (+i + 1);
+    const [pid, i] = we.dataset.we.split('|'), P = PLAN.find(x => x.id === pid), w = wallsOf(P).find(x => x.i === i);
+    if (splitMode) { splitMode = false; $('#wallSplit').textContent = '✂️ Wand teilen'; splitWall(pid, w.edge, svgPoint(e)); return; }
+    wdCur = { P: pid, i };
+    $('#wdUnsplit').hidden = !(planCfg(pid).splits && planCfg(pid).splits[w.edge]);
+    $('#wdTitle').textContent = (bpName(P) === pid ? pid : bpName(P) + ' (' + pid + ')') + ' – Wand ' + (w.edge + 1) + (String(i).includes('.') ? ' Teil ' + (+String(i).split('.')[1] + 1) : '');
     $('#wdInfo').innerHTML = `Länge ≈ <b>${fmt(w.len)} m</b> · Fläche ≈ <b>${fmt(w.area)} m²</b> · zeigt nach <b>${dirName(w.az)}</b> (${fmt(w.az, 0)}°)`;
     const bb = bpCfg(P);
     $('#wdU').innerHTML = `<option value="room">wie im Raum eingestellt (${WALLS[bb.wallT] ? WALLS[bb.wallT][0] : 'eigener U-Wert'})</option>` +
@@ -3951,7 +4001,7 @@ function demoData(days) {
 load();
 </script>
 <script>
-window.APP_VERSION = 'heizung-v15';
+window.APP_VERSION = 'heizung-v16';
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
   let reloaded = false;
