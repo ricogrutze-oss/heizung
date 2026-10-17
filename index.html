@@ -665,6 +665,7 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
     <div class="seg rangeSeg"></div>
     <div class="kv" id="dKv"></div>
     <div class="panel" style="margin-top:0"><div class="cb"><canvas id="dt"></canvas></div></div>
+    <div class="panel" id="dHumP" hidden><div class="hint" style="margin:0 0 4px">💧 Luftfeuchte</div><div class="cb" style="height:150px"><canvas id="dhum"></canvas></div></div>
     <div class="kv" id="dStats" style="margin-top:12px"></div>
     <details><summary>Alle Rohwerte</summary><table id="dRaw"></table></details>
   </div>
@@ -3354,6 +3355,17 @@ function setSpec(d) {
 }
 
 /* Auswahl oben in der Detailansicht: ganzer Raum oder ein einzelnes Gerät */
+function humChart(devs) {
+  const hs = devs.filter(d => hist(d.id).some(p => p[4] != null));
+  $('#dHumP').hidden = !hs.length;
+  if (!hs.length) { charts.dhum && charts.dhum.destroy(); charts.dhum = null; return; }
+  const ds = hs.map(d => ({ label: String(d.name).trim(), unit: '%', borderColor: hs.length > 1 ? colorOf(d.id) : '#3b82f6', backgroundColor: '#3b82f622', fill: hs.length === 1,
+    borderWidth: 1.5, data: hist(d.id).filter(p => p[4] != null).map(p => ({ x: p[0], y: p[4] })), spanGaps: gap(), yAxisID: 'y' }));
+  const o = baseOpts();
+  o.plugins.legend = { display: hs.length > 1, labels: { color: css('--mute'), boxWidth: 12, font: { size: 11 } } };
+  o.scales.y = Object.assign({}, o.scales.y, { suggestedMin: 30, suggestedMax: 80, ticks: { color: css('--mute'), callback: v => v + ' %' } });
+  mk('dhum', { type: 'line', data: { datasets: ds }, options: o });
+}
 const roomFor = d => roomsList().find(R => R.sens.includes(d) || R.th.includes(d));
 function renderDTabs(R, cur) {
   const devs = R ? R.sens.concat(R.th) : [];
@@ -3394,6 +3406,7 @@ function detailRoom(name) {
     o.scales.y1 = { position: 'right', min: 0, grid: { display: false }, ticks: { color: css('--mute'), callback: v => fmt(v, 0) + ' W' } };
   }
   mk('dt', { type: 'line', data: { datasets: ds }, options: o });
+  humChart(devs);
 }
 
 function detail(id) {
@@ -3457,7 +3470,7 @@ function detail(id) {
     const Lb = S.en.loss && S.en.loss[roomOf(d)];
     if (Lb && Lb.line.length) ds.push({ label: 'Bauphysik-Bedarf (Außentemp. − Sonne/Geräte)', unit: 'W', borderColor: '#64748b', borderDash: [4, 3], borderWidth: 1.5, pointRadius: 0, tension: .2, data: Lb.line.map(l => ({ x: l[0], y: Math.round(l[2]) })), yAxisID: 'y1' });
   }
-  const right = B ? 0 : vpts.length ? 3 : pts(4).length ? 4 : 0;
+  const right = B ? 0 : vpts.length ? 3 : 0;   // Feuchte hat ein eigenes Diagramm darunter
   const vLabel = { valve: 'Ventil', state: 'Ventil offen (Anteil)', proxy: 'Ventil (geschätzt)' }[src] || 'Ventil';
   if (right) ds.push({ label: right === 3 ? vLabel : 'Feuchte', unit: '%', borderColor: right === 3 ? '#f9731688' : '#3b82f688', backgroundColor: right === 3 ? '#f9731622' : '#3b82f622', fill: true, borderWidth: 1, data: right === 3 ? vpts : pts(right), spanGaps: gap(), yAxisID: 'y1' });
   const o = baseOpts();
@@ -3465,6 +3478,7 @@ function detail(id) {
   if (right) o.scales.y1 = { position: 'right', min: 0, max: 100, grid: { display: false }, ticks: { color: css('--mute'), callback: v => v + '%' } };
   if (B) o.scales.y1 = { position: 'right', min: 0, grid: { display: false }, ticks: { color: css('--mute'), callback: v => fmt(v, 0) + ' W' } };
   mk('dt', { type: 'line', data: { datasets: ds }, options: o });
+  humChart([d]);
 }
 
 function bump(dir) {
@@ -4069,7 +4083,7 @@ function demoData(days) {
 load();
 </script>
 <script>
-window.APP_VERSION = 'heizung-v17';
+window.APP_VERSION = 'heizung-v18';
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
   let reloaded = false;
