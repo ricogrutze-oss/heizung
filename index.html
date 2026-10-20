@@ -1524,10 +1524,11 @@ function balanceRoom(R, bp) {
   const base = hist(tempDevs[0].id).filter(p => p[1] != null);
   if (base.length < 3) return null;
   const tol = (S.range <= 2 ? 0.6 : S.range <= 10 ? 1.5 : S.range <= 30 ? 4 : 30) * 36e5;
-  const Ti = t => avgOf(tempDevs.map(d => hv(d.id, t, tol, 1)));
+  const multiTh = !sens.length && ths.length >= 2;   // kein Raumfühler, aber mehrere Thermostate: der kühlste misst am ehesten die Raumluft
+  const Ti = t => { const v = tempDevs.map(d => hv(d.id, t, tol, 1)).filter(x => x != null); return !v.length ? null : multiTh ? Math.min(...v) : v.reduce((a, b) => a + b, 0) / v.length; };
   const Tset = t => { const v = avgOf(ths.map(d => hv(d.id, t, tol, 2))); return v != null ? v : tiAt(bp.parts[0], t); };
-  const hasDiff = sens.length > 0 && ths.length > 0;
-  const Ttrv = t => avgOf(ths.map(d => hv(d.id, t, tol, 1)));
+  const hasDiff = (sens.length > 0 && ths.length > 0) || multiTh;
+  const Ttrv = t => { const v = ths.map(d => hv(d.id, t, tol, 1)).filter(x => x != null); return v.length ? Math.max(...v) : null; };   // der wärmste Heizkörper zählt
   // Heizkörperleistung (Obergrenze)
   const pnTh = ths.reduce((a, d) => a + pnOf(devCfg(d.id)), 0), nTh = ths.length ? (+devCfg(ths[0].id).n || 1.3) : 1.3;
   const pnMan = bp.parts.reduce((a, P) => a + (bpCfg(P).rad.type ? pnOf(bpCfg(P).rad) : 0), 0);
@@ -1555,8 +1556,8 @@ function balanceRoom(R, bp) {
   });
   // Differenz Thermostat − Raumfühler: Ruhewert = 20-%-Quantil
   let dBase = null;
-  if (hasDiff) { const ds = steps.map(s2 => s2.d).filter(v => v != null).sort((a, b) => a - b); if (ds.length >= 6) dBase = ds[Math.floor(ds.length * 0.2)]; }
-  steps.forEach(s2 => { s2.f = dBase != null && s2.d != null ? Math.max(0, Math.min(1, (s2.d - dBase) / 1.5)) : null; });
+  if (hasDiff) { const ds = steps.map(s2 => s2.d).filter(v => v != null).sort((a, b) => a - b); if (ds.length >= 6) dBase = Math.min(1, ds[Math.floor(ds.length * 0.2)]); }   // ein kalter Heizkörper ist höchstens ~1 K wärmer als die Raumluft
+  steps.forEach(s2 => { s2.f = s2.d != null && s2.d >= 2.5 ? 1 : dBase != null && s2.d != null ? Math.max(0, Math.min(1, (s2.d - dBase) / 1.5)) : null; });
   const on0 = s2 => s2.f != null ? s2.f >= 0.15 : s2.free;
   // Wärmespeicher C lernen: Abkühlen ohne Heizung und ohne Sonne → τ = C/H
   const taus = [];
@@ -1822,6 +1823,8 @@ function roomCard(R) {
   const primary = (sensOn[0] || thOn[0] || all[0]);
   const b = [];
   if (R.th.some(heating)) b.push('<span class="bd heat">🔥 heizt</span>');
+  const stuckNow = R.th.filter(d => { const k = stuckOf(d); return k && k.now; });
+  if (stuckNow.length) b.push('<span class="bd offl">🚱 Heizkörper schließt nicht</span>');
   if (all.some(d => d.window === true || d.window === 'open')) b.push('<span class="bd warn">🪟 Fenster offen</span>');
   if (!R.out && humDev && humDev.temp != null) {
     const o = outsideNow(), w = o ? wallRH(humDev.temp, humDev.hum, o.t) : null;
@@ -1849,6 +1852,7 @@ function roomCard(R) {
     const e = th && S.en.dev[d.id];
     if (e && e.heat) det.push(fmt(e.heat) + ' h geheizt');
     if (d.bat != null && d.bat < 20) det.push('🔋 ' + fmt(d.bat, 0) + ' %');
+    if (th && stuckNow.includes(d)) det.push('<b style="color:var(--bad, #ef4444)">⚠ Ventil schließt nicht – Thermostat defekt?</b>');
     return `<button class="rrow ${d.online ? '' : 'off'}" data-id="${d.id}">
       <span class="ri">${th ? (heating(d) ? '🔥' : '♨️') : '🌡️'}</span>
       <span class="rn"><span class="dot" style="background:${colorOf(d.id)}"></span><span class="rt">${esc(String(d.name).trim())}</span><small>${th ? 'Thermostat' : 'Fühler'}${d.online ? '' : ' · offline'}</small></span>
@@ -2595,6 +2599,26 @@ function renderMeasures() {
   }).join('') || '<div class="hint" style="margin-bottom:8px">Noch keine Maßnahme eingetragen.</div>';
 }
 
+/* Ventil schließt nicht: Thermostat selbst deutlich über Soll UND deutlich wärmer als Raumfühler bzw. anderes Thermostat im Raum */
+function stuckOf(d) {
+  const R = roomsList().find(x => x.th.includes(d)); if (!R) return null;
+  const refs = R.sens.length ? R.sens : R.th.filter(x => x !== d);
+  if (!refs.length) return null;
+  const h = hist(d.id), tol = 45 * 60e3, runs = [];
+  let r = null, hours = 0;
+  const ref = t => { const v = refs.map(x => histAt(x.id, t, tol)).filter(x => x != null); return v.length ? (R.sens.length ? v.reduce((a, b) => a + b, 0) / v.length : Math.min(...v)) : null; };
+  h.forEach(p => {
+    const rt = p[1] != null && p[2] != null ? ref(p[0]) : null;
+    const bad = rt != null && p[1] >= p[2] + 1.5 && p[1] - rt >= 2.5;
+    if (bad) { if (!r) r = { a: p[0], hrs: 0, dmax: 0 }; r.hrs += p[5] || (S.range <= 2 ? 5 / 60 : 1); r.b = p[0]; r.dmax = Math.max(r.dmax, p[1] - rt); }
+    else { if (r && r.hrs >= 1.5) runs.push(r); r = null; }
+  });
+  if (r && r.hrs >= 1.5) runs.push(r);
+  runs.forEach(x => hours += x.hrs);
+  const last = runs[runs.length - 1], now = !!(r && r.hrs >= 1.5);
+  return runs.length ? { runs, hours, last, now, ref: refs.length === 1 ? String(refs[0].name).trim() : R.sens.length ? 'Raumfühler' : 'anderes Thermostat' } : null;
+}
+
 /* ---------- Thermostat-Check ---------- */
 function renderCheck() {
   const rows = thermos().filter(d => !isHidden(d)).map(d => {
@@ -2612,6 +2636,8 @@ function renderCheck() {
     const vs = h.filter(p => p[3] != null).map(p => p[3]);
     if (vs.length >= 20 && S.range >= 2 && Math.max(...vs) === Math.min(...vs) && h.some(p => p[2] != null && p[1] != null && p[2] > p[1] + 1))
       is.push(['🔒', 'Ventilwert ändert sich nie', `Immer ${fmt(vs[0], 0)} %, obwohl es kälter war als Soll. Entweder meldet das Thermostat die Ventilstellung nicht richtig (dann schätzt die App die Heizleistung aus Soll/Ist – siehe Einstellungen → Heizkörper), oder der Ventilstift klemmt.`]);
+    const sk = stuckOf(d);
+    if (sk) is.push(['🚱', sk.now ? 'Ventil schließt nicht – jetzt gerade' : 'Ventil hat nicht geschlossen', `${sk.runs.length}× zusammen ${fmt(sk.hours, 1)} h: das Thermostat war über Soll und bis ${fmt(Math.max(...sk.runs.map(x => x.dmax)), 1)} K wärmer als „${esc(sk.ref)}“ – der Heizkörper war heiß, obwohl er zu sein sollte (zuletzt ${fmtTime(sk.last.b, true)}). Ventilstift gängig machen, Thermostat neu montieren/anlernen oder tauschen.`]);
     const R = roomsList().find(x => x.th.includes(d)), sn = R && R.sens.find(x => hist(x.id).length);
     if (sn) {
       let sum = 0, n = 0;
@@ -4104,7 +4130,7 @@ function demoData(days) {
 load();
 </script>
 <script>
-window.APP_VERSION = 'heizung-v19';
+window.APP_VERSION = 'heizung-v20';
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
   let reloaded = false;
