@@ -239,6 +239,11 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
 #plan .wh{stroke:transparent;stroke-width:16;cursor:pointer}
 #plan.drawing{touch-action:none;cursor:crosshair}
 #plan .pipe{fill:none;stroke:#dc2626;stroke-width:5;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:1 9}
+.cal{border:1px solid var(--line);border-radius:12px;padding:8px 10px;margin-bottom:8px}
+.cal summary{display:flex;justify-content:space-between;gap:8px;cursor:pointer;list-style:none}
+.cal summary small{color:var(--mute)}
+.cal .f4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;align-items:end}
+.cal .f4 label{font-size:11px}
 .dtabs{display:flex;gap:6px;overflow-x:auto;margin:0 0 10px;padding-bottom:2px}
 .dtabs:empty{display:none}
 .dtabs button{flex:none;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:20px;padding:6px 12px;font-size:13px;display:flex;align-items:center;gap:6px}
@@ -510,6 +515,9 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
     <p class="hint" style="margin-top:0">Geräte mit dem gleichen Raumnamen erscheinen in der Übersicht als <b>eine Kachel</b> – z.B. Fühler und Thermostat im Arbeitszimmer oder beide Wohnzimmer-Heizkörper. Gilt auch für die Energie-Auswertung.</p>
     <div class="rmap" id="roomMap"></div>
     <datalist id="roomNames"></datalist>
+    <h3 style="font-size:14px;margin:16px 0 6px">Fühler-Korrektur</h3>
+    <p class="hint" style="margin-top:0">Wenn ein Fühler falsch misst (z.B. im Vergleich mit einem anderen Fühler oder im Salztest): Temperatur um ± K verschieben. Feuchte: bei 1 Vergleichspunkt wird verschoben, bei 2 Punkten (z.B. Pottasche 43 % und Kochsalz 75 %) auch die Steigung korrigiert. Gilt für Anzeige, Verlauf, Taupunkt, Schimmel und Lüftungstipp – im Google Sheet bleiben die Rohwerte.</p>
+    <div id="calList"></div>
     <h3 style="font-size:14px;margin:16px 0 6px">Grundriss</h3>
     <p class="hint" style="margin-top:0">Jedem Raum im Grundriss einen Dashboard-Raum zuordnen (Nummern siehe Plan-Ansicht). Fläche und Wandfläche stammen aus deinem Plan. Rechts kannst du je Raum eine abweichende Raumhöhe eintragen.</p>
     <div id="planMap"></div>
@@ -523,6 +531,11 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
     <div class="f2">
       <label>Norm-Außentemperatur °C<input type="number" inputmode="decimal" step="0.5" data-c="bp.tNorm"></label>
       <label>Heizgrenze °C<input type="number" inputmode="decimal" step="0.5" data-c="bp.limit"></label></div>
+    <div class="f2">
+      <label>Wohnung über uns ist …<select data-c="bp.tUp"><option value="">so warm wie wir (kein Verlust)</option><option value="18">etwas kühler (≈ 18 °C)</option><option value="16">wenig geheizt (≈ 16 °C)</option><option value="12">kaum geheizt / leer (≈ 12 °C)</option></select></label>
+      <label>Wohnung unter uns ist …<select data-c="bp.tDown"><option value="">so warm wie wir (kein Verlust)</option><option value="18">etwas kühler (≈ 18 °C)</option><option value="16">wenig geheizt (≈ 16 °C)</option><option value="12">kaum geheizt / leer (≈ 12 °C)</option></select></label></div>
+    <label>Geschossdecke U-Wert W/m²K<input type="number" inputmode="decimal" step="0.05" data-c="bp.uNb" placeholder="0,9 (Altbau-Holzbalkendecke)"></label>
+    <div class="hint" style="margin:-4px 0 8px">Ist es beim Nachbarn kühler, geht Wärme durch Decke bzw. Boden – Fläche = Raumfläche aus dem Plan. Räume mit „Decke zum Dachboden“ bzw. „Kellerdecke“ zählen dort nicht doppelt.</div>
     <div id="bpList"></div>
     <div class="pn" id="bpTot" style="margin-top:10px"></div>
   </section>
@@ -841,6 +854,33 @@ function thermos() { return S.data.devices.filter(isThermo); }
 function sensors() { return climate().filter(d => !isThermo(d)); }
 function hist(id) { return (S.data.history && S.data.history[id]) || []; }
 
+/* ---------- Fühler-Korrektur: lineare Abbildung roh → korrigiert, auf Daten im Speicher angewandt ---------- */
+function calOf(id) {
+  const c = ((S.cfg.devices || {})[id] || {}).cal || {}, I = { ta: 1, tb: num(c.t) || 0, ha: 1, hb: 0 };
+  const p1 = [num(c.r1), num(c.s1)], p2 = [num(c.r2), num(c.s2)];
+  const ok = q => q[0] != null && q[1] != null;
+  if (ok(p1) && ok(p2) && Math.abs(p2[1] - p1[1]) >= 5) { I.ha = (p2[0] - p1[0]) / (p2[1] - p1[1]); I.hb = p1[0] - I.ha * p1[1]; }
+  else if (ok(p1)) I.hb = p1[0] - p1[1];
+  else if (ok(p2)) I.hb = p2[0] - p2[1];
+  return I;
+}
+const calSame = (a, b) => ['ta', 'tb', 'ha', 'hb'].every(k => Math.abs(a[k] - b[k]) < 1e-9);
+function applyCal() {
+  if (!S.data || !S.data.devices) return;
+  S.calApplied = S.calApplied || {};
+  const ID = { ta: 1, tb: 0, ha: 1, hb: 0 };
+  S.data.devices.forEach(d => {
+    const o = S.calApplied[d.id] || ID, n = calOf(d.id);
+    if (calSame(o, n)) return;
+    const T = v => v == null ? v : Math.round((n.ta * (v - o.tb) / o.ta + n.tb) * 100) / 100;
+    const H = v => v == null ? v : Math.max(0, Math.min(100, Math.round((n.ha * (v - o.hb) / o.ha + n.hb) * 10) / 10));
+    d.temp = T(d.temp); if (d.hum != null) d.hum = H(d.hum);
+    hist(d.id).forEach(p => { p[1] = T(p[1]); if (p[4] != null && !isThermo(d)) p[4] = H(p[4]); });
+    S.calApplied[d.id] = n;
+  });
+}
+const rawOf = (id, v, k) => { const o = (S.calApplied || {})[id]; if (v == null || !o) return v; return k === 'h' ? (v - o.hb) / o.ha : (v - o.tb) / o.ta; };
+
 /* ===================================================================
  * Server-Aufruf: in Google direkt, sonst per URL + Token, sonst Demo
  * =================================================================== */
@@ -862,6 +902,7 @@ function loadCached() {
     const raw = localStorage.getItem(lastKey()); if (!raw) return false;
     const d = JSON.parse(raw); if (!d || !d.devices) return false;
     S.data = d; S.demo = false; if (!S.dirty) S.cfg = normCfg(d.config);
+    S.calApplied = {}; applyCal();
     S.cached = true; render(); return true;
   } catch (e) { return false; }
 }
@@ -880,6 +921,7 @@ async function load(fn = 'apiData') {
     S.data = d;
     S.demo = !IS_GAS && !store.get(K.url, '');
     if (!S.dirty) S.cfg = normCfg(d.config);
+    S.calApplied = {}; applyCal();
     $('#err').hidden = true;
   } catch (e) {
     $('#err').textContent = 'Laden fehlgeschlagen: ' + e.message;
@@ -1278,12 +1320,12 @@ function calcEnergy() {
       const gain = (sunGain(G.name, t) + Q_INT * G.A) / (G.H || 1);   // Gewinne je W/K
       G.parts.forEach(q => {
         const st = tiAt(q.P, t);                          // Stellung des Thermostatkopfs zu dieser Zeit
-        const viaW = Ti => Math.max(0, q.H * (Ti - To) - gain * q.H);
+        const viaW = Ti => Math.max(0, lossW(q, Ti, To) - gain * q.H);
         if (meas != null && meas > st + 0.5) { ev += viaW(meas) * step / 36e5 / 1000; return; }   // Kopf zu → Wärme von nebenan
         if (meas == null && st <= 12) { ev += viaW(st) * step / 36e5 / 1000; return; }             // Stufe 1 / Frostschutz
         const Ti = meas != null ? meas : st;
         if (Ti <= To) return;
-        let W = q.H * (Ti - To);
+        let W = Math.max(0, lossW(q, Ti, To));
         if (q.pn) { const dT = tmAt(t) - Ti; W = Math.min(W, dT > 0 ? q.pn * Math.pow(dT / 50, q.n) : 0); }
         e += W * step / 36e5 / 1000;
       });
@@ -1322,6 +1364,7 @@ function physLoss(name) {
   const parts = PLAN.filter(P => bpName(P) === name && bpCfg(P).heat !== 'off' && bpH(P).has);
   if (!parts.length) return null;
   const H = parts.reduce((a, P) => a + bpH(P).H, 0), A = parts.reduce((a, P) => a + P.a, 0);
+  const HO = { H, Hn: parts.reduce((a, P) => a + bpH(P).Hn, 0), HnT: parts.reduce((a, P) => a + bpH(P).HnT, 0) };
   const R = roomsList().find(x => x.name === name);
   const devs = R ? (R.sens.length ? R.sens : R.th) : [];
   const step = S.range <= 2 ? 36e5 : S.range <= 30 ? 3 * 36e5 : 864e5, t1 = Date.now(), t0 = t1 - S.range * 864e5;
@@ -1333,7 +1376,7 @@ function physLoss(name) {
     const Ti = vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : tiAt(parts[0], t);
     if (vs.length) { ti += Ti; n++; }
     to += To; nt++;
-    const W = Ti > To ? H * (Ti - To) : 0, G = sunGain(name, t) + Q_INT * A, Wn = Math.max(0, W - G);
+    const W = Math.max(0, lossW(HO, Ti, To)), G = sunGain(name, t) + Q_INT * A, Wn = Math.max(0, W - G);
     kwh += W * step / 36e5 / 1000; gain += Math.min(W, G) * step / 36e5 / 1000; net += Wn * step / 36e5 / 1000;
     line.push([t, W, Wn, To, Ti]);
   }
@@ -1408,9 +1451,14 @@ function bpH(P) {
   if (fromPlan) { const w = wallSums(P); ext = w.ext; win = w.win; nb = w.nb; tr = w.tr; extHT = w.extHT; nbHT = w.nbHT; }   // je Wand eigener Aufbau
   const HT = extHT + win * (uOf(WINS, b.winT, b.winU) + WB) + unh * uOf(UNH, b.unhT, b.unhU) * FX_UNH
     + tr * 1.5 * FX_UNH + nbHT;   // Treppenhaus halb so kalt wie außen; Nachbarhaus ist meist beheizt
-  const has = ext + win + unh + tr + nb > 0;
-  const HV = has ? 0.34 * (num(b.n) ?? 0.5) * V : 0;
-  return { HT, HV, H: HT + HV, V, has, ext, win, nb, tr, fromPlan };
+  // Decke/Boden zur Nachbarwohnung: Verlust Hn·(Ti − T_Nachbar), nur wenn dort kühler angenommen
+  const uN = num(S.cfg.bp.uNb) ?? 0.9, tU = num(S.cfg.bp.tUp), tD = num(S.cfg.bp.tDown);
+  const aUp = tU != null && !/^dach/.test(b.unhT) ? P.a : (tU != null ? Math.max(0, P.a - unh) : 0);
+  const aDn = tD != null && !/^kd/.test(b.unhT) ? P.a : (tD != null ? Math.max(0, P.a - unh) : 0);
+  const Hn = uN * (aUp + aDn), HnT = uN * (aUp * (tU || 0) + aDn * (tD || 0));
+  const has = ext + win + unh + tr + nb > 0 || Hn > 0;
+  const HV = ext + win + unh + tr + nb > 0 ? 0.34 * (num(b.n) ?? 0.5) * V : 0;
+  return { HT, HV, H: HT + HV, Hn, HnT, V, has, ext, win, nb, tr, fromPlan };
 }
 function trvRooms() { return new Set(thermos().filter(d => !devCfg(d.id).ignore && pnOf(devCfg(d.id)) > 0).map(roomOf)); }
 function bpName(P) { const pc = planCfg(P.id), b = bpCfg(P); return pc.room || String(b.name || '').trim() || P.id; }
@@ -1427,7 +1475,7 @@ function physRooms() {
     const R = out[name] || (out[name] = { name, H: 0, A: 0, parts: [], sens: null, pn: 0 });
     const pn = b.rad.type ? pnOf(b.rad) : 0;
     R.H += h.H; R.A += P.a; R.pn += pn;
-    R.parts.push({ P, H: h.H, pn, n: +b.rad.n || 1.3 });
+    R.parts.push({ P, H: h.H, Hn: h.Hn, HnT: h.HnT, pn, n: +b.rad.n || 1.3 });
     if (pc.room && !R.sens) {
       const RR = roomsList().find(x => x.name === pc.room), sd = RR && RR.sens.find(d => d.temp != null);
       if (sd) R.sens = sd.id;
@@ -1504,7 +1552,7 @@ function sunGain(name, t) {
 const C_DEF = 15, Q_INT = 3;   // Wh/(K·m²) Wärmespeicher, W/m² innere Gewinne
 function roomBP(name) {
   const parts = PLAN.filter(P => bpName(P) === name && bpCfg(P).heat !== 'off' && bpH(P).has);
-  return parts.length ? { parts, H: parts.reduce((a, P) => a + bpH(P).H, 0), A: parts.reduce((a, P) => a + P.a, 0),
+  return parts.length ? { parts, H: parts.reduce((a, P) => a + bpH(P).H, 0), Hn: parts.reduce((a, P) => a + bpH(P).Hn, 0), HnT: parts.reduce((a, P) => a + bpH(P).HnT, 0), A: parts.reduce((a, P) => a + P.a, 0),
     fremd: parts.some(P => bpCfg(P).fremd) } : null;
 }
 const hv = (id, t, tol, k) => {   // Messwert Nr. k (1 = Ist, 2 = Soll) nahe t
@@ -1573,7 +1621,7 @@ function balanceRoom(R, bp) {
   let qf = 0, qfN = 0;
   if (bp.fremd) {
     const xs = [];
-    steps.forEach(s2 => { if (on0(s2) || s2.air || s2.rec || s2.qs > 20 || s2.dt > 1.5) return; xs.push(bp.H * (s2.ti - s2.to) + C * s2.rate - Q_INT * bp.A); });
+    steps.forEach(s2 => { if (on0(s2) || s2.air || s2.rec || s2.qs > 20 || s2.dt > 1.5) return; xs.push(lossW(bp, s2.ti, s2.to) + C * s2.rate - Q_INT * bp.A); });
     xs.sort((a, b) => a - b); qfN = xs.length;
     if (xs.length >= 6) qf = Math.max(0, xs[Math.floor(xs.length / 2)]);
   }
@@ -1582,11 +1630,11 @@ function balanceRoom(R, bp) {
   let kwh = 0, hours = 0, heatH = 0, via = 0;
   steps.forEach(s2 => {
     const cTerm = (s2.rec || s2.dt > 6) ? 0 : C * s2.rate;
-    const loss = bp.H * (s2.ti - s2.to);
+    const loss = lossW(bp, s2.ti, s2.to);
     const bal = loss + cTerm - s2.qs - Q_INT * bp.A - qf;
     const on = on0(s2);
     const W = on ? Math.max(0, Math.min(Pmax(s2.t, s2.ti), bal)) : 0;
-    const Wv = !on && !s2.air && !s2.rec && s2.dt <= 6 ? Math.max(0, bal) : 0;   // eigener Heizkörper zu, Raum hält trotzdem Temperatur → Wärme von nebenan
+    const Wv = (!on && !s2.air && !s2.rec && s2.dt <= 6 ? Math.max(0, bal) : 0) + (s2.air ? 0 : qf);   // Heizkörper zu, Raum hält trotzdem Temperatur → Wärme von nebenan; dazu gelernte Fremdwärme (Rohre)
     via += Wv * s2.dt / 1000;
     let st = 'off';
     if (W > 0) {
@@ -1654,7 +1702,8 @@ function designTi(P) {
   }
   return Math.max(16, tiAt(P, Date.now()));
 }
-function bpLoad(P) { const h = bpH(P), tn = num(S.cfg.bp.tNorm) ?? -12; return h.has && bpCfg(P).heat !== 'off' ? h.H * (designTi(P) - tn) : 0; }
+const lossW = (o, Ti, To) => o.H * (Ti - To) + (o.Hn || 0) * Ti - (o.HnT || 0);   // Außen + Nachbarwohnungen
+function bpLoad(P) { const h = bpH(P), tn = num(S.cfg.bp.tNorm) ?? -12; return h.has && bpCfg(P).heat !== 'off' ? Math.max(0, lossW(h, designTi(P), tn)) : 0; }
 
 /* ===================================================================
  * Darstellung
@@ -1824,6 +1873,9 @@ function roomCard(R) {
   const b = [];
   if (R.th.some(heating)) b.push('<span class="bd heat">🔥 heizt</span>');
   const stuckNow = R.th.filter(d => { const k = stuckOf(d); return k && k.now; });
+  const cmpD = all.find(d => { const k = cmpOf(d); return k && k.fresh; }), cmpR = cmpD && cmpOf(cmpD);
+  if (cmpR) { const done = ((((S.cfg.devices || {})[cmpD.id] || {}).cal || {}).at || 0) >= cmpR.since;
+    b.push(`<span class="bd warn">🔎 ${done ? 'Vergleich übernommen ✓' : cmpR.ready ? 'Vergleich fertig – übernehmen' : 'Vergleich läuft'}</span>`); }
   if (stuckNow.length) b.push('<span class="bd offl">🚱 Heizkörper schließt nicht</span>');
   if (all.some(d => d.window === true || d.window === 'open')) b.push('<span class="bd warn">🪟 Fenster offen</span>');
   if (!R.out && humDev && humDev.temp != null) {
@@ -2097,7 +2149,7 @@ function renderCompare() {
     rows.map(r => `<tr><td>${esc(r.n)}</td><td class="n">${r.phys ? '–' : fmt(r.v, 1)}</td><td class="n">${r.g != null ? fmt(r.g, 1) : '–'}</td><td class="n">${r.l != null ? fmt(r.l, 1) : '–'}</td>
       <td class="n">${E.loss[r.n] && E.loss[r.n].ti != null ? fmt(E.loss[r.n].ti) + '°' : '–'}</td><td>${verdict(r)}</td></tr>`).join('');
   const lossN = Object.values(E.loss).reduce((a, L) => a + L.net, 0), cov = Object.keys(E.loss).length;
-  $('#cmpNote').innerHTML = (E.factor && k > 1.6 ? `<div class="pn" style="margin-bottom:8px">⚠ <b>Der Zähler misst ${fmt(k, 1)}× so viel, wie die Räume nach Modell brauchen.</b> Deshalb sind alle Raumwerte hochskaliert und liegen über der Bauphysik. Häufige Ursachen: Räume ohne Bauphysik-Angaben (${PLAN.filter(P => bpCfg(P).heat !== 'off' && !bpH(P).has).length} von ${PLAN.length} Grundriss-Räumen), U-Werte zu gut angesetzt (Altbau-Fenster, ungedämmte Decke/Boden), Luftwechsel zu niedrig, Heizungsrohre im Treppenhaus/Keller hinter dem Zähler – oder zu wenige Zählerablesungen im Zeitraum.</div>` : '') + '<b>Messung:</b> was die App aus Thermostaten/Fühlern errechnet (kalibriert am Zähler). <b>Bauphysik:</b> Verlust über Wände, Fenster und Lüftung – Stunde für Stunde mit der <b>tatsächlichen</b> Außen- und Raumtemperatur gerechnet (nicht mit −12 °C). <b>Netto</b> = brutto minus Sonne durch die Fenster und Wärme von Personen/Geräten; das muss die Heizung liefern. ' +
+  $('#cmpNote').innerHTML = (E.factor && k > 1.6 ? `<div class="pn" style="margin-bottom:8px">⚠ <b>Der Zähler misst ${fmt(k, 1)}× so viel, wie die Räume nach Modell brauchen.</b> Deshalb sind alle Raumwerte hochskaliert und liegen über der Bauphysik. Häufige Ursachen: Wärme, die durch Decke/Boden zu kühleren Nachbarwohnungen geht (${S.cfg.bp.tUp || S.cfg.bp.tDown ? 'ist schon berücksichtigt' : 'unter Einstellungen → Bauphysik „Wohnung über/unter uns“ einstellen'}), Räume ohne Bauphysik-Angaben (${PLAN.filter(P => bpCfg(P).heat !== 'off' && !bpH(P).has).length} von ${PLAN.length} Grundriss-Räumen), U-Werte zu gut angesetzt (Altbau-Fenster, ungedämmte Decke/Boden), Luftwechsel zu niedrig, Heizungsrohre im Treppenhaus/Keller hinter dem Zähler – oder zu wenige Zählerablesungen im Zeitraum.</div>` : '') + '<b>Messung:</b> was die App aus Thermostaten/Fühlern errechnet (kalibriert am Zähler). <b>Bauphysik:</b> Verlust über Wände, Fenster und Lüftung – Stunde für Stunde mit der <b>tatsächlichen</b> Außen- und Raumtemperatur gerechnet (nicht mit −12 °C). <b>Netto</b> = brutto minus Sonne durch die Fenster und Wärme von Personen/Geräten; das muss die Heizung liefern. ' +
     'Die große Heizlast-Zahl unter Einstellungen → Bauphysik gilt dagegen nur für den kältesten Auslegungstag. Bleibt netto deutlich über der Messung, heizen Rohre oder Nachbarn mit, oder die U-Werte sind zu schlecht angesetzt. Große Abweichungen zeigen, wo etwas nicht stimmt: Heizkörpergröße, Ventilschätzung oder Bauphysik-Angaben. Räume ohne Angaben unter Einstellungen → Bauphysik ergänzen.';
 }
 
@@ -3026,7 +3078,83 @@ function ventStatus() {
   }).join('');
 }
 
+/* Vergleichsfühler: liegt er im selben Raum wie ein anderer Fühler und messen beide ≥ 2 h ruhig nebeneinander → Korrekturvorschlag */
+function refDev() {
+  const id = S.cfg.cmpDev;
+  return id === 'none' ? null : (id && S.data.devices.find(d => d.id === id)) || climateAll().find(d => !isThermo(d) && /vergleich/i.test(d.name)) || null;
+}
+const median = a => { const b = a.slice().sort((x, y) => x - y); return b.length ? b[Math.floor(b.length / 2)] : null; };
+function cmpOf(d) {
+  const ref = refDev();
+  if (!ref || ref.id === d.id || roomOf(ref) !== roomOf(d) || isOutside(d)) return null;
+  const pts = [];
+  hist(d.id).filter(p => p[0] > Date.now() - 24 * 36e5).forEach(p => {
+    if (p[1] == null) return;
+    const rt = histAt(ref.id, p[0], 8 * 60e3); if (rt == null) return;
+    const rp = hist(ref.id).find(q => Math.abs(q[0] - p[0]) <= 8 * 60e3 && q[4] != null);
+    pts.push({ t: p[0], dT: rt - rawOf(d.id, p[1], 't'), rH: rp && p[4] != null && !isThermo(d) ? rp[4] : null, sH: p[4] != null && !isThermo(d) ? rawOf(d.id, p[4], 'h') : null });
+  });
+  if (pts.length < 6) return null;
+  // vom Ende rückwärts: solange der Unterschied stabil bleibt, lagen beide nebeneinander
+  const last = pts.slice(-6), mT = median(last.map(x => x.dT)), lastH = last.filter(x => x.rH != null && x.sH != null), mH = lastH.length ? median(lastH.map(x => x.rH - x.sH)) : null;
+  let i = pts.length - 1;
+  while (i > 0 && Math.abs(pts[i - 1].dT - mT) < 0.6 && (mH == null || pts[i - 1].rH == null || pts[i - 1].sH == null || Math.abs(pts[i - 1].rH - pts[i - 1].sH - mH) < 4)) i--;
+  const t0 = pts[i].t, use = pts.filter(x => x.t >= t0 + 45 * 60e3);   // erste 45 min zum Angleichen verwerfen
+  const span = use.length ? (use[use.length - 1].t - use[0].t) / 36e5 : 0;
+  const fresh = Date.now() - pts[pts.length - 1].t < 30 * 60e3;
+  const hh = use.filter(x => x.rH != null && x.sH != null);
+  return { ref, since: t0, span, ready: span >= 2, fresh,
+    dT: use.length ? median(use.map(x => x.dT)) : null,
+    rH: hh.length ? hh.reduce((a, x) => a + x.rH, 0) / hh.length : null,
+    sH: hh.length ? hh.reduce((a, x) => a + x.sH, 0) / hh.length : null };
+}
+function applyCmp(id) {
+  const k = cmpOf(S.data.devices.find(d => d.id === id)); if (!k || !k.ready) return;
+  const c = S.cfg.devices[id] || (S.cfg.devices[id] = {}), cal = c.cal || (c.cal = {});
+  cal.t = Math.round(k.dT * 10) / 10;
+  if (k.rH != null) {
+    const r = Math.round(k.rH * 10) / 10, sh = Math.round(k.sH * 10) / 10;
+    if (cal.r1 != null && cal.s1 != null && Math.abs(r - cal.r1) >= 10) { cal.r2 = r; cal.s2 = sh; }   // weit genug weg → zweiter Punkt (Steigung)
+    else { cal.r1 = r; cal.s1 = sh; }
+  }
+  cal.at = Date.now();
+  applyCal(); markDirty(); renderCal(); render();
+  toast('Korrektur übernommen');
+}
+function cmpBox(d) {
+  const k = cmpOf(d); if (!k) return '';
+  if (!k.fresh) return '';
+  const done = ((((S.cfg.devices || {})[d.id] || {}).cal || {}).at || 0) >= k.since;
+  if (done) return `<div class="pn" style="margin:6px 0">✅ Vergleich mit „${esc(String(k.ref.name).trim())}“ übernommen – du kannst ihn zum nächsten Fühler legen.</div>`;
+  if (!k.ready) return `<div class="pn" style="margin:6px 0">🔎 „${esc(String(k.ref.name).trim())}“ liegt daneben seit ${fmtTime(k.since, true)} – noch ca. ${fmt(Math.max(0.1, 2 - k.span), 1)} h bis zum Vorschlag.</div>`;
+  return `<div class="pn" style="margin:6px 0">🔎 Vergleich mit „${esc(String(k.ref.name).trim())}“ über ${fmt(k.span, 1)} h: Temperatur ${k.dT >= 0 ? '+' : ''}${fmt(k.dT, 1)} K${k.rH != null ? ` · Feuchte richtig ${fmt(k.rH, 0)} %, dieser Fühler ${fmt(k.sH, 0)} %` : ''}
+    <button class="btn sec" data-cmpok="${d.id}" style="margin-top:6px">Als Korrektur übernehmen</button></div>`;
+}
+function renderCal() {
+  const open = new Set($$('#calList details[open]').map(x => x.dataset.cal));
+  const devs = climateAll().filter(d => !isHidden(d)).sort((a, b) => roomOf(a).localeCompare(roomOf(b), 'de') || isThermo(a) - isThermo(b));
+  const nIn = (id, k, v, ph) => `<input type="number" inputmode="decimal" step="0.1" data-cal="${d_(id)}" data-ck="${k}" value="${v ?? ''}" placeholder="${ph}">`;
+  $('#calList').innerHTML = devs.map(d => {
+    const c = ((S.cfg.devices || {})[d.id] || {}).cal || {}, I = calOf(d.id), any = I.tb || I.hb || I.ha !== 1;
+    const rt = rawOf(d.id, d.temp, 't'), rh = d.hum != null ? rawOf(d.id, d.hum, 'h') : null;
+    return `<details class="cal" data-cal="${d.id}" ${open.has(d.id) ? 'open' : ''}><summary><span>${isThermo(d) ? '♨️' : '🌡️'} ${esc(String(d.name).trim())} <small>${esc(roomOf(d))}</small></span>
+      <small>${any ? '✏️ ' + [I.tb ? (I.tb > 0 ? '+' : '') + fmt(I.tb, 1) + ' K' : '', I.ha !== 1 ? 'Feuchte 2-Punkt' : I.hb ? (I.hb > 0 ? '+' : '') + fmt(I.hb, 1) + ' %' : ''].filter(Boolean).join(' · ') : 'ohne Korrektur'}</small></summary>
+      ${cmpBox(d)}
+      <div class="hint" style="margin:6px 0">Jetzt gemessen (roh): ${rt != null ? fmt(rt) + ' °C' : '–'}${rh != null ? ' · ' + fmt(rh, 0) + ' %' : ''}${any ? ` → angezeigt: ${d.temp != null ? fmt(d.temp) + ' °C' : '–'}${d.hum != null ? ' · ' + fmt(d.hum, 0) + ' %' : ''}` : ''}</div>
+      <div class="f4"><label>Temperatur ± K${nIn(d.id, 't', c.t, '0')}</label>${isThermo(d) || d.hum == null && !c.r1 ? '<span></span><span></span><span></span>' : `
+        <label>Feuchte Punkt 1: richtig %${nIn(d.id, 'r1', c.r1, 'z.B. 75')}</label><label>Fühler zeigte %${nIn(d.id, 's1', c.s1, 'z.B. 81')}</label><span></span>
+        <span></span><label>Punkt 2 (optional): richtig %${nIn(d.id, 'r2', c.r2, 'z.B. 43')}</label><label>Fühler zeigte %${nIn(d.id, 's2', c.s2, 'z.B. 47')}</label><span></span>`}</div>
+      <div class="hint" style="margin-top:4px">„Richtig“ = Wert des Vergleichsfühlers bzw. 75 % (Kochsalz), 43 % (Pottasche), 33 % (Magnesiumchlorid). „Fühler zeigte“ = Rohwert dieses Fühlers zur selben Zeit.</div>
+    </details>`;
+  }).join('') || '<div class="hint">Keine Fühler.</div>';
+  const rf = refDev();
+  $('#calList').insertAdjacentHTML('afterbegin', `<label style="margin-bottom:8px">Vergleichsfühler (zum Herumtragen)<select data-cmpdev>
+    <option value="none" ${S.cfg.cmpDev === 'none' ? 'selected' : ''}>– keiner –</option>${climateAll().filter(d => !isThermo(d)).map(d => `<option value="${d.id}" ${rf && rf.id === d.id ? 'selected' : ''}>${esc(String(d.name).trim())}</option>`).join('')}</select></label>
+    <div class="hint" style="margin:-4px 0 8px">Leg ihn neben einen Fühler und ordne ihn oben unter „Räume“ demselben Raum zu. Nach 2 h ruhigem Messen erscheint beim Fühler ein Vorschlag zum Übernehmen.</div>`);
+}
+const d_ = x => esc(x);
 function renderRoomMap() {
+  renderCal();
   const devs = climateAll().slice().sort((a, b) => isHidden(a) - isHidden(b) || roomOf(a).localeCompare(roomOf(b), 'de') || isThermo(a) - isThermo(b));
   const names = [...new Set(climate().map(roomOf))].sort((a, b) => a.localeCompare(b, 'de'));
   $('#roomNames').innerHTML = names.map(n => `<option value="${esc(n)}">`).join('');
@@ -3241,7 +3369,8 @@ function bpOut(P) {
     (B.hasDiff ? ' · Heizsignal aus Thermostat − Raumfühler ✓' : '') : '';
   let o = `Wärmeverlust <b>${fmt(h.H, 0)} W/K</b> (Wand/Fenster/Decke ${fmt(h.HT, 0)}, Lüftung ${fmt(h.HV, 0)}) – also je 1 °C Unterschied innen/außen ${fmt(h.H, 0)} W`;
   const toN = outsideAt(Date.now()), tiN = designTi(P);
-  if (toN != null) o += `<br>Jetzt bei ${fmt(toN)} °C außen, ${fmt(tiN, 0)} °C innen: ≈ <b>${fmt(Math.max(0, h.H * (tiN - toN)), 0)} W</b>`;
+  if (h.Hn) o += `<br>Decke/Boden zu kühleren Nachbarn: ${fmt(h.Hn, 0)} W/K – bei ${fmt(designTi(P), 0)} °C innen ≈ ${fmt(Math.max(0, h.Hn * designTi(P) - h.HnT), 0)} W, unabhängig vom Wetter`;
+  if (toN != null) o += `<br>Jetzt bei ${fmt(toN)} °C außen, ${fmt(tiN, 0)} °C innen: ≈ <b>${fmt(Math.max(0, lossW(h, tiN, toN)), 0)} W</b>`;
   o += `<br>Heizlast am kältesten Tag (${fmt(tn, 0)} °C außen) ≈ <b>${fmt(L, 0)} W</b> (${fmt(L / P.a, 0)} W/m²) – zur Prüfung des Heizkörpers`;
   // reicht der Heizkörper?
   const tm = vlFor(tn) - (+S.cfg.heat.spread || 0) / 2, ti = designTi(P);
@@ -3300,7 +3429,7 @@ function bpTotal() {
   if (!has.length) { $('#bpTot').innerHTML = 'Noch keine Angaben. Tipp: Raum aufklappen, Außenwand- und Fensterfläche eintragen – den Rest kann man auf den Vorgaben lassen.'; return; }
   const H = has.reduce((a, P) => a + bpH(P).H, 0), L = has.reduce((a, P) => a + bpLoad(P), 0), A = has.reduce((a, P) => a + P.a, 0);
   const M = meterCalc(), g = M.iv.filter(v => !v.bad && v.G), kgt = g.length ? g.reduce((a, v) => a + v.dk, 0) / g.reduce((a, v) => a + v.G, 0) : null;
-  const toN = outsideAt(Date.now()), nowW = toN != null ? has.reduce((a, P) => a + bpH(P).H * Math.max(0, designTi(P) - toN), 0) : null;
+  const toN = outsideAt(Date.now()), nowW = toN != null ? has.reduce((a, P) => a + Math.max(0, lossW(bpH(P), designTi(P), toN)), 0) : null;
   $('#bpTot').innerHTML = `<b>Wohnung (${has.length} von ${on.length} Räumen mit Angaben, ${fmt(A, 0)} m²)</b><br>Wärmeverlust ${fmt(H, 0)} W/K` +
     (nowW != null ? ` · jetzt bei ${fmt(toN)} °C außen ≈ <b>${fmt(nowW / 1000, 1)} kW</b>` : '') +
     ` · am kältesten Tag (${fmt(num(S.cfg.bp.tNorm) ?? -12, 0)} °C) ≈ ${fmt(L / 1000, 1)} kW (${fmt(L / A, 0)} W/m²)` +
@@ -3833,6 +3962,7 @@ $('#manList').addEventListener('change', async e => {
   await addTi(sel.dataset.mant, Date.now(), sel.value);
   renderManual(); if (S.tab === 'en') renderEnergy();
 });
+$('#calList').addEventListener('click', e => { const b = e.target.closest('[data-cmpok]'); if (b) { e.preventDefault(); applyCmp(b.dataset.cmpok); } });
 $('#bpList').addEventListener('click', async e => {
   const box = e.target.closest('[data-bp]'); if (!box) return;
   const P = PLAN.find(x => x.id === box.dataset.bp);
@@ -3914,6 +4044,17 @@ $('#tab-hk').addEventListener('input', e => {
     if (t.dataset.pr) { c.room = t.value; markDirty(); renderBP(); return; }
     c.h = num(t.value);
     markDirty(); updBp();
+    return;
+  }
+  if (t.dataset.cmpdev != null && t.matches('select')) { S.cfg.cmpDev = t.value; markDirty(); renderCal(); render(); return; }
+  if (t.dataset.cal && t.dataset.ck) {
+    const c = S.cfg.devices[t.dataset.cal] || (S.cfg.devices[t.dataset.cal] = {}), cal = c.cal || (c.cal = {});
+    cal[t.dataset.ck] = num(t.value);
+    if (Object.values(cal).every(v => v == null)) delete c.cal;
+    applyCal(); markDirty();
+    const box = t.closest('details'), sm = box && box.querySelector('summary > small');
+    clearTimeout(S.calT); S.calT = setTimeout(() => { if (document.activeElement && document.activeElement.dataset.cal) return; renderCal(); }, 1500);
+    if (sm) { const I = calOf(t.dataset.cal); sm.textContent = (I.tb || I.hb || I.ha !== 1) ? '✏️ geändert' : 'ohne Korrektur'; }
     return;
   }
   if (t.dataset.hide) {
@@ -4130,7 +4271,7 @@ function demoData(days) {
 load();
 </script>
 <script>
-window.APP_VERSION = 'heizung-v20';
+window.APP_VERSION = 'heizung-v23';
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
   let reloaded = false;
