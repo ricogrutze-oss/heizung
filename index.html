@@ -442,6 +442,14 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
     <button class="btn sec" id="msAdd">+ Maßnahme speichern</button>
   </section>
   <section class="panel">
+    <h2>🧊 Abkühltest (Heizpause)</h2>
+    <div id="coolBox"></div>
+    <details style="margin-top:8px"><summary class="hint" style="cursor:pointer">Heizpause von Hand eintragen</summary>
+      <div class="f2" style="align-items:end;margin-top:6px"><label>von<input type="datetime-local" id="coolFrom"></label><label>bis<input type="datetime-local" id="coolTo"></label></div>
+      <button class="btn sec" id="coolAdd">Zeitraum hinzufügen</button><div id="coolMan" class="hint" style="margin-top:6px"></div></details>
+    <p class="hint">Wenn alle Heizkörper aus sind (Urlaub, Frostschutz), kühlt die Wohnung ungestört aus. Daraus misst die App, wie schnell jeder Raum Wärme verliert – unabhängig von den Bauphysik-Angaben. Zusammen mit dem Wärmezähler ergibt das den <b>tatsächlichen</b> Wärmeverlust je Raum. Zeitraum so wählen, dass die Pause drin ist (z.B. 7 oder 30 Tage). Mindestens 12 h, besser 2–3 Tage.</p>
+  </section>
+  <section class="panel">
     <h2>🩺 Thermostat-Check</h2>
     <div id="chkList"></div>
     <p class="hint">Prüft im gewählten Zeitraum: Ventil offen, aber der Raum wird nicht warm; Ventil zu, aber der Raum wird zu warm; Abweichung zum Raumfühler; Ventil bewegt sich nicht; Akku und Verbindung. Für eine gute Aussage 3–7 Tage wählen.</p>
@@ -678,6 +686,7 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
     <div class="seg rangeSeg"></div>
     <div class="kv" id="dKv"></div>
     <div class="panel" style="margin-top:0"><div class="cb"><canvas id="dt"></canvas></div></div>
+    <div class="panel" id="dBalP" hidden></div>
     <div class="panel" id="dHumP" hidden><div class="hint" style="margin:0 0 4px">💧 Luftfeuchte</div><div class="cb" style="height:150px"><canvas id="dhum"></canvas></div></div>
     <div class="kv" id="dStats" style="margin-top:12px"></div>
     <details><summary>Alle Rohwerte</summary><table id="dRaw"></table></details>
@@ -791,7 +800,7 @@ const UNH = {
   dachg: ['Decke zum Dachboden, gedämmt', 0.3], tr: ['Wand zum Treppenhaus', 1.5], own: ['eigener U-Wert', null]
 };
 const AIR = [[0.3, '0,3 – dichte Fenster, wenig gelüftet'], [0.5, '0,5 – normal (Stoßlüften)'], [0.7, '0,7 – ältere, etwas undichte Fenster'], [1, '1,0 – undichte Fenster / viel lüften']];
-const STUFE = [[6, '✱ Frostschutz (≈ 6 °C)'], [12, 'Stufe 1 (≈ 12 °C)'], [16, 'Stufe 2 (≈ 16 °C)'], [18, 'Stufe 2½ (≈ 18 °C)'], [20, 'Stufe 3 (≈ 20 °C)'],
+const STUFE = [[0, '⛔ aus / zugedreht'], [6, '✱ Frostschutz (≈ 6 °C)'], [12, 'Stufe 1 (≈ 12 °C)'], [16, 'Stufe 2 (≈ 16 °C)'], [18, 'Stufe 2½ (≈ 18 °C)'], [20, 'Stufe 3 (≈ 20 °C)'],
   [22, 'Stufe 3½ (≈ 22 °C)'], [24, 'Stufe 4 (≈ 24 °C)'], [28, 'Stufe 5 (≈ 28 °C)']];
 const BP_DEF = { name: '', heat: 'on', ext: null, wallT: 'z38', wallU: null, win: null, winT: 'kast', winU: null, unh: null, unhT: 'kd', unhU: null, n: 0.5, ti: 20, rad: {} };
 const WB = 0.10, FX_UNH = 0.5;   // Wärmebrücken-Zuschlag; Temperaturfaktor zu unbeheizten Räumen
@@ -1364,7 +1373,9 @@ function physLoss(name) {
   const parts = PLAN.filter(P => bpName(P) === name && bpCfg(P).heat !== 'off' && bpH(P).has);
   if (!parts.length) return null;
   const H = parts.reduce((a, P) => a + bpH(P).H, 0), A = parts.reduce((a, P) => a + P.a, 0);
-  const HO = { H, Hn: parts.reduce((a, P) => a + bpH(P).Hn, 0), HnT: parts.reduce((a, P) => a + bpH(P).HnT, 0) };
+  const sumP = k => parts.reduce((a, P) => a + (bpH(P)[k] || 0), 0);
+  const HO = { H, Hn: sumP('Hn'), HnT: sumP('HnT') }, Hw = sumP('Hwall'), Hf = sumP('Hwin'), Hv = sumP('HV');
+  const comp = { wall: 0, win: 0, vent: 0, nb: 0, sun: 0, int: 0 };
   const R = roomsList().find(x => x.name === name);
   const devs = R ? (R.sens.length ? R.sens : R.th) : [];
   const step = S.range <= 2 ? 36e5 : S.range <= 30 ? 3 * 36e5 : 864e5, t1 = Date.now(), t0 = t1 - S.range * 864e5;
@@ -1376,11 +1387,14 @@ function physLoss(name) {
     const Ti = vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : tiAt(parts[0], t);
     if (vs.length) { ti += Ti; n++; }
     to += To; nt++;
+    const kh = step / 36e5 / 1000, qs = sunGain(name, t);
+    comp.wall += Hw * (Ti - To) * kh; comp.win += Hf * (Ti - To) * kh; comp.vent += Hv * (Ti - To) * kh; comp.nb += (HO.Hn * Ti - HO.HnT) * kh;
+    comp.sun += qs * kh; comp.int += Q_INT * A * kh;
     const W = Math.max(0, lossW(HO, Ti, To)), G = sunGain(name, t) + Q_INT * A, Wn = Math.max(0, W - G);
     kwh += W * step / 36e5 / 1000; gain += Math.min(W, G) * step / 36e5 / 1000; net += Wn * step / 36e5 / 1000;
     line.push([t, W, Wn, To, Ti]);
   }
-  return { kwh, gain, net, H, A, line, measured: n > 0, ti: n ? ti / n : null, to: nt ? to / nt : null };
+  return { kwh, gain, net, H, A, line, comp, measured: n > 0, ti: n ? ti / n : null, to: nt ? to / nt : null };
 }
 
 /* ---------- Wärmezähler: Ablesungen [Zeit, kWh, VL, RL, Außen, Notiz] ---------- */
@@ -1458,7 +1472,8 @@ function bpH(P) {
   const Hn = uN * (aUp + aDn), HnT = uN * (aUp * (tU || 0) + aDn * (tD || 0));
   const has = ext + win + unh + tr + nb > 0 || Hn > 0;
   const HV = ext + win + unh + tr + nb > 0 ? 0.34 * (num(b.n) ?? 0.5) * V : 0;
-  return { HT, HV, H: HT + HV, Hn, HnT, V, has, ext, win, nb, tr, fromPlan };
+  const Hwin = win * (uOf(WINS, b.winT, b.winU) + WB);
+  return { HT, HV, H: HT + HV, Hn, HnT, Hwin, Hwall: HT - Hwin, V, has, ext, win, nb, tr, fromPlan };
 }
 function trvRooms() { return new Set(thermos().filter(d => !devCfg(d.id).ignore && pnOf(devCfg(d.id)) > 0).map(roomOf)); }
 function bpName(P) { const pc = planCfg(P.id), b = bpCfg(P); return pc.room || String(b.name || '').trim() || P.id; }
@@ -1590,7 +1605,10 @@ function balanceRoom(R, bp) {
     const ti = Ti(t), tip = Ti(tp), to = outsideAt(t);
     if (ti == null || tip == null || to == null) continue;
     steps.push({ t, dt, ti, tip, to, set: Tset(t), rate: (ti - tip) / dt, qs: sunGain(R.name, t),
-      d: hasDiff ? (() => { const a = Ttrv(t); return a != null ? a - ti : null; })() : null });
+      d: hasDiff ? (() => { const a = Ttrv(t); return a != null ? a - ti : null; })() : null,
+      dp: hasDiff ? (() => { const a = Ttrv(tp); return a != null ? a - tip : null; })() : null,
+      // jedes Thermostat misst selbst über seinem Soll → es hat zugemacht
+      closed: ths.length > 0 && ths.every(d => { const a = hv(d.id, t, tol, 1), b = hv(d.id, t, tol, 2); return a != null && b != null && a > b + 0.5; }) });
   }
   if (!steps.length) return null;
   // Lüften und Rückprall danach
@@ -1604,9 +1622,18 @@ function balanceRoom(R, bp) {
   });
   // Differenz Thermostat − Raumfühler: Ruhewert = 20-%-Quantil
   let dBase = null;
-  if (hasDiff) { const ds = steps.map(s2 => s2.d).filter(v => v != null).sort((a, b) => a - b); if (ds.length >= 6) dBase = Math.min(1, ds[Math.floor(ds.length * 0.2)]); }   // ein kalter Heizkörper ist höchstens ~1 K wärmer als die Raumluft
-  steps.forEach(s2 => { s2.f = s2.d != null && s2.d >= 2.5 ? 1 : dBase != null && s2.d != null ? Math.max(0, Math.min(1, (s2.d - dBase) / 1.5)) : null; });
-  const on0 = s2 => s2.f != null ? s2.f >= 0.15 : s2.free;
+  if (hasDiff) { const ds = steps.map(s2 => s2.d).filter(v => v != null).sort((a, b) => a - b); if (ds.length >= 6) { dBase = ds[Math.floor(ds.length * 0.2)]; if (!multiTh) dBase = Math.min(2, dBase); } }   // mit Raumfühler: kalter Heizkörper höchstens ~1 K wärmer; zwei Thermostate untereinander haben oft festen Versatz (Einbauort)
+  steps.forEach(s2 => { s2.f = !multiTh && s2.d != null && s2.d >= 2.5 ? 1 : dBase != null && s2.d != null ? Math.max(0, Math.min(1, (s2.d - dBase) / 1.5)) : null; });
+  // Mit Raumfühler: Heizkörper läuft nur, wenn das Thermostat spürbar wärmer ist als der Raum (≥ 0,6 K über Ruhewert)
+  // oder ihm davonläuft (Abstand wächst ≥ 0,5 K/h). Laufen beide im Gleichschritt, kommt die Wärme von außen (Nachbarn, Rohre, Sonne).
+  const on0 = s2 => {
+    if (s2.f == null) return s2.free;
+    const ex = s2.d - (dBase ?? 0.5), lead = s2.dp != null && s2.dt > 0 ? (s2.d - s2.dp) / s2.dt : 0;
+    // Raum ist über Soll und kühlt gleichmäßig ab, ohne dass das Thermostat davonläuft → eigener Heizkörper ist zu
+    const hot = !multiTh && s2.d >= 2.5 || ex >= 2;   // Heizkörper eindeutig heiß (z.B. Ventil klemmt)
+    if (!hot && (s2.closed || s2.ti > s2.set + 0.5 && s2.rate < -0.05) && lead < 0.3) return false;
+    return ex >= 0.6 || (ex >= 0.3 && lead >= 0.5);
+  };
   // Wärmespeicher C lernen: Abkühlen ohne Heizung und ohne Sonne → τ = C/H
   const taus = [];
   steps.forEach(s2 => {
@@ -1623,18 +1650,20 @@ function balanceRoom(R, bp) {
     const xs = [];
     steps.forEach(s2 => { if (on0(s2) || s2.air || s2.rec || s2.qs > 20 || s2.dt > 1.5) return; xs.push(lossW(bp, s2.ti, s2.to) + C * s2.rate - Q_INT * bp.A); });
     xs.sort((a, b) => a - b); qfN = xs.length;
-    if (xs.length >= 6) qf = Math.max(0, xs[Math.floor(xs.length / 2)]);
+    if (xs.length >= 6) qf = Math.max(0, Math.min(10 * bp.A, xs[Math.floor(xs.length / 2)]));   // höchstens 10 W/m² – sonst ist es kein Rohr mehr
   }
   // Heizleistung je Schritt
   const line = [];
-  let kwh = 0, hours = 0, heatH = 0, via = 0;
+  let kwh = 0, hours = 0, heatH = 0, via = 0, pipes = 0;
   steps.forEach(s2 => {
     const cTerm = (s2.rec || s2.dt > 6) ? 0 : C * s2.rate;
     const loss = lossW(bp, s2.ti, s2.to);
     const bal = loss + cTerm - s2.qs - Q_INT * bp.A - qf;
     const on = on0(s2);
     const W = on ? Math.max(0, Math.min(Pmax(s2.t, s2.ti), bal)) : 0;
-    const Wv = (!on && !s2.air && !s2.rec && s2.dt <= 6 ? Math.max(0, bal) : 0) + (s2.air ? 0 : qf);   // Heizkörper zu, Raum hält trotzdem Temperatur → Wärme von nebenan; dazu gelernte Fremdwärme (Rohre)
+    const qfE = s2.air ? 0 : Math.min(qf, Math.max(0, loss + cTerm - s2.qs - Q_INT * bp.A));   // tatsächlich genutzte Fremdwärme
+    pipes += qfE * s2.dt / 1000;
+    const Wv = (!on && !s2.air && !s2.rec && s2.dt <= 6 ? Math.max(0, bal) : 0) + qfE;   // Heizkörper zu, Raum hält trotzdem Temperatur → Wärme von nebenan; dazu Fremdwärme (Rohre)
     via += Wv * s2.dt / 1000;
     let st = 'off';
     if (W > 0) {
@@ -1647,7 +1676,7 @@ function balanceRoom(R, bp) {
     kwh += e; hours += s2.dt; if (W > 0) heatH += s2.dt;
     line.push([s2.t, W, st, e, s2.dt, Wv * s2.dt / 1000]);
   });
-  return { name: R.name, kwh, via, hours, heatH, line, C: C / bp.A, cLearned, qf, qfN, fremd: bp.fremd, hasDiff, dBase, pn, H: bp.H, A: bp.A };
+  return { name: R.name, kwh, via, pipes, hours, heatH, line, C: C / bp.A, cLearned, qf, qfN, fremd: bp.fremd, hasDiff, dBase, pn, H: bp.H, A: bp.A };
 }
 
 /* ===================================================================
@@ -2409,7 +2438,7 @@ function spotPins() {
 }
 
 function renderAnalyse() {
-  const parts = [renderMould, renderPass, renderHeatmap, renderTimeline, renderSankey, renderComfort, renderYear, renderMeasures, renderCheck];
+  const parts = [renderMould, renderPass, renderHeatmap, renderTimeline, renderSankey, renderComfort, renderYear, renderMeasures, renderCool, renderCheck];
   parts.forEach(f => { try { f(); } catch (e) { console.error(f.name, e); } });
 }
 const halo = 'paint-order:stroke;stroke:var(--card);stroke-width:3px;stroke-linejoin:round';
@@ -2659,9 +2688,14 @@ function stuckOf(d) {
   const h = hist(d.id), tol = 45 * 60e3, runs = [];
   let r = null, hours = 0;
   const ref = t => { const v = refs.map(x => histAt(x.id, t, tol)).filter(x => x != null); return v.length ? (R.sens.length ? v.reduce((a, b) => a + b, 0) / v.length : Math.min(...v)) : null; };
+  let off = 0;
+  if (!R.sens.length) {   // zwei Thermostate: üblichen Versatz (Einbauort) abziehen
+    const ds = h.map(p => { const rt = p[1] != null ? ref(p[0]) : null; return rt != null ? p[1] - rt : null; }).filter(v => v != null).sort((a, b) => a - b);
+    if (ds.length >= 6) off = Math.max(0, ds[Math.floor(ds.length * 0.2)]);
+  }
   h.forEach(p => {
     const rt = p[1] != null && p[2] != null ? ref(p[0]) : null;
-    const bad = rt != null && p[1] >= p[2] + 1.5 && p[1] - rt >= 2.5;
+    const bad = rt != null && p[1] >= p[2] + 1.5 && p[1] - rt - off >= 2.5;
     if (bad) { if (!r) r = { a: p[0], hrs: 0, dmax: 0 }; r.hrs += p[5] || (S.range <= 2 ? 5 / 60 : 1); r.b = p[0]; r.dmax = Math.max(r.dmax, p[1] - rt); }
     else { if (r && r.hrs >= 1.5) runs.push(r); r = null; }
   });
@@ -2669,6 +2703,87 @@ function stuckOf(d) {
   runs.forEach(x => hours += x.hrs);
   const last = runs[runs.length - 1], now = !!(r && r.hrs >= 1.5);
   return runs.length ? { runs, hours, last, now, ref: refs.length === 1 ? String(refs[0].name).trim() : R.sens.length ? 'Raumfühler' : 'anderes Thermostat' } : null;
+}
+
+/* ---------- Abkühltest: Heizpausen finden und Auskühlung auswerten ----------
+ * Modell je Raum:  dTi/dt = (To − Ti)/τ + g     (τ = C/H Zeitkonstante, g = Fremdwärme in K/h)
+ * Wohnung gesamt mit Wärmezähler:  H_Zähler aus kWh je Gradtag → C = τ·H → je Raum H_gemessen = C/m² · A / τ
+ */
+function coolPauses() {
+  const ths = thermos().filter(d => !devCfg(d.id).ignore && hist(d.id).length);
+  const t1 = Date.now(), t0 = t1 - S.range * 864e5, step = 36e5, tol = (S.range <= 10 ? 1.5 : 4) * 36e5, out = [];
+  let cur = null;
+  if (ths.length) for (let t = t0; t <= t1; t += step) {
+    const off = ths.every(d => { const a = hv(d.id, t, tol, 1), b = hv(d.id, t, tol, 2); return a != null && b != null && b <= 15 && a > b + 0.3; });
+    if (off) { if (!cur) cur = { a: t }; cur.b = t; } else { if (cur) out.push(cur); cur = null; }
+  }
+  if (cur) out.push(cur);
+  const man = (S.cfg.pauses || []).filter(p => p[1] > t0 && p[0] < t1).map(p => ({ a: Math.max(p[0], t0), b: Math.min(p[1], t1), man: true }));
+  return out.filter(p => p.b - p.a >= 12 * 36e5).concat(man).sort((x, y) => (y.b - y.a) - (x.b - x.a));
+}
+function coolFit(series, toF, a, b) {   // series(t) → Ti; Regression y = k·x + g mit x = To − Ti, y = dTi/dt
+  const xs = [], ys = [], st = 36e5, s0 = a + 2 * st;   // erste 2 h: Heizkörper kühlen noch aus
+  for (let t = s0; t + st <= b; t += st) {
+    const T1 = series(t), T2 = series(t + st), To = toF(t + st / 2); if (T1 == null || T2 == null || To == null) continue;
+    xs.push(To - (T1 + T2) / 2); ys.push(T2 - T1);
+  }
+  if (xs.length < 8) return null;
+  const n = xs.length, mx = xs.reduce((p, v) => p + v, 0) / n, my = ys.reduce((p, v) => p + v, 0) / n;
+  const sxx = xs.reduce((p, v) => p + (v - mx) ** 2, 0), sxy = xs.reduce((p, v, i) => p + (v - mx) * (ys[i] - my), 0);
+  if (sxx < 1) return null;
+  let k = sxy / sxx, g = my - k * mx;
+  // zu wenig Spreizung im Abstand → nur über den Mittelwert ohne Fremdwärme schätzen
+  if (!(k > 0.002 && k < 0.5)) { k = mx < -1 ? Math.max(0.002, -my / -mx) : null; g = 0; if (!k) return null; }
+  const T0 = series(s0), Te = series(b);
+  return { tau: 1 / k, g, n, drop: T0 != null && Te != null ? T0 - Te : null, dTavg: -mx, rate: my };
+}
+function coolCalc(P) {
+  const rooms = roomsList().filter(R => !R.out), res = { P, rooms: [] };
+  const tol = (S.range <= 10 ? 1.5 : 4) * 36e5;
+  const roomT = R => { const devs = R.sens.length ? R.sens : R.th; return t => { const v = devs.map(d => hv(d.id, t, tol, 1)).filter(x => x != null); return v.length ? (R.sens.length ? v.reduce((a, b) => a + b, 0) / v.length : Math.min(...v)) : null; }; };
+  rooms.forEach(R => { const f = coolFit(roomT(R), outsideAt, P.a, P.b); if (f) res.rooms.push(Object.assign({ name: R.name, A: roomArea(R.name) || 0, bp: roomBP(R.name) }, f)); });
+  // ganze Wohnung: flächengewichtetes Mittel
+  const wr = res.rooms.filter(r => r.A > 0), fns = wr.map(r => ({ f: roomT(rooms.find(R => R.name === r.name)), A: r.A })), At = wr.reduce((a, r) => a + r.A, 0);
+  if (At) res.flat = coolFit(t => { let s2 = 0, w = 0; fns.forEach(x => { const v = x.f(t); if (v != null) { s2 += v * x.A; w += x.A; } }); return w ? s2 / w : null; }, outsideAt, P.a, P.b);
+  res.A = At;
+  // Zähler: Verbrauch in der Pause (nur wenn Ablesungen nah an Anfang/Ende) und Kennwert H
+  const rd = meterRd(), near = t => rd.reduce((b, r) => Math.abs(r[0] - t) < 6 * 36e5 && (!b || Math.abs(r[0] - t) < Math.abs(b[0] - t)) ? r : b, null);
+  const ra = near(P.a), rb = near(P.b); if (ra && rb && rb[0] > ra[0]) res.meterKwh = rb[1] - ra[1];
+  const kg = kgtNow(); if (kg && kg.src === 'meter') res.Hm = kg.v * 1000 / 24;   // W/K (inkl. Gewinne → eher etwas zu niedrig)
+  if (res.flat && res.Hm) { res.C = res.flat.tau * res.Hm; res.cm2 = At ? res.C / At : null; }
+  res.rooms.forEach(r => {
+    r.Hbp = r.bp ? r.bp.H + (r.bp.Hn || 0) : null;
+    if (res.cm2 && r.A) r.Hmeas = res.cm2 * r.A / r.tau;
+    r.qf = r.g > 0 && r.Hmeas ? r.g * r.Hmeas * r.tau : null;   // Fremdwärme W = g · C
+  });
+  return res;
+}
+let coolCache = null;
+function renderCool() {
+  const ps = coolPauses(), box = $('#coolBox');
+  $('#coolMan').innerHTML = (S.cfg.pauses || []).map((p, i) => `${fmtTime(p[0], true)} – ${fmtTime(p[1], true)} <button class="del" data-cooldel="${i}">✕</button>`).join('<br>') || '';
+  if (!ps.length) {
+    const sv = S.cfg.coolLast;
+    box.innerHTML = '<div class="hint">Im gewählten Zeitraum keine Heizpause gefunden (alle Thermostate mind. 12 h auf ≤ 15 °C und darunter geregelt).</div>' + (sv ? `<div class="pn" style="margin-top:6px">Letzter Test: ${fmtTime(sv.a, true)} – ${fmtTime(sv.b, true)} · Wohnung τ ≈ ${fmt(sv.tau, 0)} h${sv.Hm ? ` · gemessen ${fmt(sv.Hm, 0)} W/K, Bauphysik ${fmt(sv.Hbp, 0)} W/K` : ''}</div>` : '');
+    return;
+  }
+  const P = ps[0], R = coolCalc(P);
+  const hrs = (P.b - P.a) / 36e5, rows = R.rooms.slice().sort((a, b) => a.tau - b.tau);
+  const per15 = r => 15 / r.tau * 24;   // K pro Tag bei 15 K Unterschied
+  const Hbp = R.rooms.reduce((a, r) => a + (r.Hbp || 0), 0);
+  box.innerHTML = `<div class="pn">Heizpause ${P.man ? '(von Hand) ' : ''}<b>${fmtTime(P.a, true)} – ${fmtTime(P.b, true)}</b> · ${fmt(hrs, 0)} h${R.meterKwh != null ? ` · Zähler in der Pause: <b>${fmt(R.meterKwh, 1)} kWh</b>${R.meterKwh > 1 ? ' (es lief trotzdem Wärme – Rohre, nicht ganz zu, Nachbarstrang?)' : ' ✓'}` : ' · für den Zählerverbrauch in der Pause: am Anfang und Ende ablesen'}
+    ${R.flat ? `<br>Wohnung: Zeitkonstante <b>τ ≈ ${fmt(R.flat.tau, 0)} h</b> – ohne Heizung kühlt sie bei 15 K Unterschied nach außen um ≈ ${fmt(per15(R.flat), 1)} K pro Tag aus` : ''}
+    ${R.C ? `<br>Mit dem Zähler (${fmt(R.Hm, 0)} W/K): Wärmespeicher ≈ ${fmt(R.C / 1000, 1)} kWh/K (${fmt(R.cm2, 0)} Wh/K·m²) · Bauphysik-Angaben zusammen ${fmt(Hbp, 0)} W/K → ${Hbp ? (R.Hm > Hbp * 1.15 ? `tatsächlich <b>${fmt((R.Hm / Hbp - 1) * 100, 0)} % mehr Verlust</b> als angenommen` : R.Hm < Hbp * 0.85 ? `tatsächlich ${fmt((1 - R.Hm / Hbp) * 100, 0)} % weniger Verlust als angenommen` : 'passt gut') : ''}` : '<br><span class="hint">Für Watt-Werte je Raum braucht es Zählerablesungen aus Heizzeiten (Kennwert kWh je Gradtag).</span>'}</div>
+    <div class="tw" style="margin-top:8px"><table><tr><th>Raum</th><th class="n">τ h</th><th class="n">K/Tag*</th><th class="n">gemessen W/K</th><th class="n">Bauphysik W/K</th><th class="n">Fremdwärme</th></tr>
+    ${rows.map(r => `<tr><td>${esc(r.name)}</td><td class="n">${fmt(r.tau, 0)}</td><td class="n">${fmt(per15(r), 1)}</td><td class="n">${r.Hmeas ? fmt(r.Hmeas, 0) : '–'}</td>
+      <td class="n">${r.Hbp ? fmt(r.Hbp, 0) : '–'}${r.Hmeas && r.Hbp ? ` <small style="color:${r.Hmeas > r.Hbp * 1.3 ? 'var(--bad, #ef4444)' : r.Hmeas < r.Hbp * 0.7 ? 'var(--acc)' : 'var(--mute)'}">${r.Hmeas > r.Hbp * 1.3 ? '▲ mehr' : r.Hmeas < r.Hbp * 0.7 ? '▼ weniger' : '≈'}</small>` : ''}</td>
+      <td class="n">${r.qf ? '≈ ' + fmt(r.qf, 0) + ' W' : r.g > 0.02 ? '+' + fmt(r.g, 2) + ' K/h' : '–'}</td></tr>`).join('')}</table></div>
+    <div class="hint" style="margin-top:6px">* Auskühlung pro Tag bei 15 K Unterschied innen/außen. Kleines τ = kühlt schnell aus (viel Verlust oder wenig Masse). „Gemessen W/K“ setzt für alle Räume denselben Wärmespeicher je m² an. Fremdwärme = was der Raum ohne eigene Heizung trotzdem bekommt (Nachbarräume, Rohre, Nachbarwohnung, Sonne). ${ps.length > 1 ? `Weitere Pausen im Zeitraum: ${ps.length - 1}.` : ''}</div>`;
+  // Ergebnis merken, damit es auch bei kürzerem Zeitraum sichtbar bleibt
+  if (R.flat && hrs >= 24 && (!S.cfg.coolLast || S.cfg.coolLast.a !== P.a || Math.abs(S.cfg.coolLast.b - P.b) > 36e5)) {
+    S.cfg.coolLast = { a: P.a, b: P.b, tau: R.flat.tau, Hm: R.Hm || null, Hbp, rooms: Object.fromEntries(rows.map(r => [r.name, { tau: Math.round(r.tau), H: r.Hmeas ? Math.round(r.Hmeas) : null }])) };
+    markDirty();
+  }
 }
 
 /* ---------- Thermostat-Check ---------- */
@@ -3534,6 +3649,29 @@ function roomEnergyStats(name) {
   if (P && !trvRooms().has(name)) st.push(['Thermostatkopf jetzt', stufeTxt(tiAt(P, Date.now())).replace(/ \(.*/, '')]);
   return st;
 }
+/* Wärmebilanz eines Raums: woher kommt die Wärme, wohin geht sie */
+function balPanel(name) {
+  const E = S.en.rooms[name], L = S.en.loss && S.en.loss[name], el = $('#dBalP');
+  if (!L || !L.comp) { el.hidden = true; return; }
+  const c = L.comp, own = E ? E.kwh : 0, via = E ? E.via || 0 : 0, B = S.en.bal && S.en.bal[name];
+  const pipes = B && B.fremd ? Math.min(via, B.pipes || 0) : 0;
+  const gains = [['🔥 eigener Heizkörper', own, '#f97316', 'kostet'], ['↔️ von Nachbarräumen', via - pipes, '#a78bfa', 'kostet woanders'], ['🔧 Rohre / warme Nachbarn (gelernt)', pipes, '#c084fc', 'kostet'],
+    ['☀️ Sonne durch Fenster', c.sun, '#facc15', 'gratis'], ['👤 Personen & Geräte', c.int, '#94a3b8', 'gratis']].filter(x => x[1] > 0.05);
+  const losses = [['🧱 Wände/Decke/Treppenhaus', c.wall, '#64748b'], ['🪟 Fenster', c.win, '#38bdf8'], ['💨 Lüftung/Undichtheit', c.vent, '#34d399'], ['⬆️⬇️ zu Nachbarwohnungen', c.nb, '#a78bfa']].filter(x => Math.abs(x[1]) > 0.05);
+  const gS = gains.reduce((a, x) => a + x[1], 0), lS = losses.reduce((a, x) => a + x[1], 0), mx = Math.max(gS, lS, 0.1);
+  const row = (l, v, col, tag) => `<div style="display:grid;grid-template-columns:1fr auto;gap:2px 8px;margin:3px 0"><span style="font-size:13px">${l}${tag ? ` <small style="color:var(--mute)">${tag}</small>` : ''}</span><b style="font-size:13px">${fmt(v, 1)} kWh</b>
+    <span style="grid-column:1/3;height:6px;border-radius:3px;background:var(--chip)"><i style="display:block;height:6px;border-radius:3px;width:${Math.max(1, Math.abs(v) / mx * 100)}%;background:${col}"></i></span></div>`;
+  const rest = gS - lS;
+  const P = PLAN.find(Q => bpName(Q) === name), trv = trvRooms().has(name);
+  const note = !trv && P ? (() => { const st = tiAt(P, Date.now()), set = tiLog(P).length || (planCfg(P.id).bp || {}).ti != null;
+    return `<div class="hint" style="margin-top:6px">Heizkörper ohne Smart-Thermostat: angenommen <b>${stufeTxt(st).replace(/ \(.*/, '')}</b>${set ? '' : ' (Standardwert – nicht eingetragen!)'}. Ist er in Wirklichkeit zu, unter Einstellungen → Bauphysik → ${esc(name)} „⛔ aus / zugedreht“ wählen – dann zählt die Wärme als „von Nachbarräumen“.</div>`; })() : '';
+  el.hidden = false;
+  el.innerHTML = `<div class="hint" style="margin:0 0 6px">⚖️ Wärmebilanz ${rangeLabel()} · Ø innen ${L.ti != null ? fmt(L.ti) + ' °C' : '–'} · Ø außen ${L.to != null ? fmt(L.to) + ' °C' : '–'}</div>
+    <b style="font-size:13px">Wärme kommt von … (${fmt(gS, 1)} kWh)</b>${gains.map(x => row(...x)).join('') || '<div class="hint">–</div>'}
+    <b style="font-size:13px;display:block;margin-top:8px">Wärme geht über … (${fmt(lS, 1)} kWh)</b>${losses.map(x => row(x[0], x[1], x[2])).join('')}
+    <div class="hint" style="margin-top:6px">${Math.abs(rest) < 0.05 * Math.max(gS, lS) + 0.2 ? '✓ geht etwa auf.' : rest > 0 ? `${fmt(rest, 1)} kWh mehr hinein als hinaus – in Wänden/Möbeln gespeichert oder beim Lüften rausgegangen.` : `${fmt(-rest, 1)} kWh mehr hinaus als hinein – aus dem Speicher (Raum kühlt aus) oder Wärme, die das Modell nicht kennt.`}
+    ${B && B.hasDiff ? 'Heizung erkannt über Thermostat ↔ Raumfühler: nur wenn das Thermostat am Heizkörper spürbar wärmer wird als der Raum, zählt es als eigener Heizkörper – laufen beide im Gleichschritt, kommt die Wärme von außen. ' : ''}Werte ohne Zähler-Kalibrierung${S.en.factor ? ` (Zähler-Faktor ${fmt(S.en.k, 2)})` : ''}.</div>${note}`;
+}
 function humChart(devs) {
   const hs = devs.filter(d => hist(d.id).some(p => p[4] != null));
   $('#dHumP').hidden = !hs.length;
@@ -3585,7 +3723,7 @@ function detailRoom(name) {
     o.scales.y1 = { position: 'right', min: 0, grid: { display: false }, ticks: { color: css('--mute'), callback: v => fmt(v, 0) + ' W' } };
   }
   mk('dt', { type: 'line', data: { datasets: ds }, options: o });
-  humChart(devs);
+  humChart(devs); balPanel(name);
 }
 
 function detail(id) {
@@ -3654,7 +3792,7 @@ function detail(id) {
   if (right) o.scales.y1 = { position: 'right', min: 0, max: 100, grid: { display: false }, ticks: { color: css('--mute'), callback: v => v + '%' } };
   if (B) o.scales.y1 = { position: 'right', min: 0, grid: { display: false }, ticks: { color: css('--mute'), callback: v => fmt(v, 0) + ' W' } };
   mk('dt', { type: 'line', data: { datasets: ds }, options: o });
-  humChart([d]);
+  humChart([d]); if (isOutside(d)) $('#dBalP').hidden = true; else balPanel(roomOf(d));
 }
 
 function bump(dir) {
@@ -3962,6 +4100,12 @@ $('#manList').addEventListener('change', async e => {
   await addTi(sel.dataset.mant, Date.now(), sel.value);
   renderManual(); if (S.tab === 'en') renderEnergy();
 });
+$('#coolAdd').addEventListener('click', () => {
+  const a = new Date($('#coolFrom').value).getTime(), b = new Date($('#coolTo').value).getTime();
+  if (!(b > a)) { toast('Bitte von und bis eintragen'); return; }
+  (S.cfg.pauses || (S.cfg.pauses = [])).push([a, b]); markDirty(); renderCool();
+});
+$('#coolMan').addEventListener('click', e => { const b = e.target.closest('[data-cooldel]'); if (!b) return; S.cfg.pauses.splice(+b.dataset.cooldel, 1); markDirty(); renderCool(); });
 $('#calList').addEventListener('click', e => { const b = e.target.closest('[data-cmpok]'); if (b) { e.preventDefault(); applyCmp(b.dataset.cmpok); } });
 $('#bpList').addEventListener('click', async e => {
   const box = e.target.closest('[data-bp]'); if (!box) return;
@@ -4271,7 +4415,7 @@ function demoData(days) {
 load();
 </script>
 <script>
-window.APP_VERSION = 'heizung-v23';
+window.APP_VERSION = 'heizung-v27';
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
   let reloaded = false;
