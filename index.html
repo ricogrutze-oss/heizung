@@ -400,6 +400,12 @@ body.t-small .card.room,body.t-list .card.room{cursor:pointer}
 <section id="tab-an" hidden>
   <div class="seg rangeSeg" style="margin-top:10px"></div>
   <section class="pass" id="passCard"></section>
+  <section class="panel" id="saveP">
+    <h2>💶 Spar-Berater</h2>
+    <div id="saveSum"></div>
+    <div id="saveList"></div>
+    <p class="hint">Simuliert für jeden Raum einen typischen Tag bei der aktuellen Außentemperatur: einmal durchgehend auf Komfort, einmal mit Absenkung nach deinem Zeitplan – inklusive wie weit der Raum in der Zeit überhaupt auskühlt (Wärmespeicher) und wann vorgeheizt werden muss (Heizkörperleistung). Gerechnet wird mit dem gemessenen Verlust aus Abkühltest/Zähler, sonst mit den Bauphysik-Angaben. Sonne und Geräte sind nicht eingerechnet – die echte Ersparnis ist ähnlich, der Verbrauch etwas kleiner.</p>
+  </section>
   <section class="panel" id="mouldP">
     <h2>🍄 Schimmel-Überwachung</h2>
     <div id="mouldList"></div>
@@ -2438,7 +2444,7 @@ function spotPins() {
 }
 
 function renderAnalyse() {
-  const parts = [renderMould, renderPass, renderHeatmap, renderTimeline, renderSankey, renderComfort, renderYear, renderMeasures, renderCool, renderCheck];
+  const parts = [renderSave, renderMould, renderPass, renderHeatmap, renderTimeline, renderSankey, renderComfort, renderYear, renderMeasures, renderCool, renderCheck];
   parts.forEach(f => { try { f(); } catch (e) { console.error(f.name, e); } });
 }
 const halo = 'paint-order:stroke;stroke:var(--card);stroke-width:3px;stroke-linejoin:round';
@@ -2705,6 +2711,121 @@ function stuckOf(d) {
   return runs.length ? { runs, hours, last, now, ref: refs.length === 1 ? String(refs[0].name).trim() : R.sens.length ? 'Raumfühler' : 'anderes Thermostat' } : null;
 }
 
+/* ---------- Spar-Berater: Absenkung je Raum simulieren ----------
+ * Raum als ein Speicher:  C·dT/dt = P − H·(T − Ta),  P = 0 … Heizkörperleistung
+ */
+const SAVE_PROF = {
+  wohn: ['Wohnraum (früh + abends)', [[6, 8], [16, 23]], [[8, 23]]],
+  home: ['Homeoffice / ganztags', [[7, 23]], [[8, 23]]],
+  schlaf: ['Schlafzimmer (nachts)', [[21, 7]], [[22, 9]]],
+  bad: ['Bad (früh + abends)', [[6, 7.5], [20, 22]], [[8, 10], [20, 22]]],
+  selten: ['selten genutzt', [], []],
+  immer: ['immer Komfort (keine Absenkung)', [[0, 24]], [[0, 24]]]
+};
+const inWin = (h, ws) => ws.some(([a, b]) => a <= b ? h >= a && h < b : h >= a || h < b);
+function roomWorstF(name) {
+  const Ps = PLAN.filter(P => bpName(P) === name);
+  let f = 1;
+  Ps.forEach(P => {
+    wallsOf(P).filter(w => w.type === 'ext').forEach(w => { f = Math.min(f, fRsiWall(w.U)); });
+    if (!wallsDefined(P) && bpH(P).ext) f = Math.min(f, fRsiWall(uOf(WALLS, bpCfg(P).wallT, bpCfg(P).wallU)));
+  });
+  try { autoCorners().filter(c => Ps.some(P => P.id === c.P)).forEach(c => { f = Math.min(f, c.f); }); } catch (e) {}
+  (S.cfg.spots || []).filter(sp => Ps.some(P => P.id === sp.P) && sp.f != null).forEach(sp => { f = Math.min(f, sp.f); });
+  return f < 1 ? f : null;
+}
+// tiefste Raumtemperatur, bei der die kälteste Stelle unter 80 % Oberflächenfeuchte bleibt
+function mouldMinT(name, To) {
+  const R = roomsList().find(x => x.name === name), d = R && humDevOf(R), f = roomWorstF(name);
+  if (!d || f == null) return null;
+  const pts = hist(d.id).filter(p => p[1] != null && p[4] != null && p[0] > Date.now() - 7 * 864e5);
+  if (!pts.length) return null;
+  const ah = pts.reduce((a, p) => a + absHum(p[1], p[4]), 0) / pts.length;   // g/m³ – bleibt beim Absenken etwa gleich
+  for (let ti = 10; ti <= 24; ti += 0.25) { const ts = To + f * (ti - To); if (ah / absHum(ts, 100) <= 0.8) return { t: ti, ah, f }; }
+  return { t: 24.5, ah, f };
+}
+function roomModel(name) {
+  const bp = roomBP(name), A = roomArea(name) || (bp && bp.A) || 0, cl = S.cfg.coolLast, B = S.en.bal && S.en.bal[name];
+  let H = null, src = '', tau = null;
+  const cr = cl && cl.rooms && cl.rooms[name];
+  if (cr && cr.H) { H = cr.H; src = 'Abkühltest'; }
+  else if (bp) {
+    H = bp.H + (bp.Hn || 0); src = 'Bauphysik';
+    const Hbp = PLAN.filter(P => bpCfg(P).heat !== 'off' && bpH(P).has).reduce((a, P) => a + bpH(P).H + (bpH(P).Hn || 0), 0), kg = kgtNow();
+    if (kg && kg.src === 'meter' && Hbp) { const sc = Math.max(0.3, Math.min(2, kg.v * 1000 / 24 / Hbp)); H *= sc; src = 'Bauphysik × Zähler (' + fmt(sc, 2) + ')'; }
+  } else if (A) { H = 2.5 * A; src = 'Schätzung'; }
+  if (!H) return null;
+  if (cr && cr.tau >= 10 && cr.tau <= 400) tau = cr.tau;
+  else { const c = (B && B.C) || C_DEF; tau = A ? c * A / H : 40; }
+  const R = roomsList().find(x => x.name === name);
+  let pn = 0, n = 1.3;
+  if (R) R.th.filter(d => !devCfg(d.id).ignore).forEach(d => { pn += pnOf(devCfg(d.id)); n = +devCfg(d.id).n || 1.3; });
+  if (bp) bp.parts.forEach(P => { if (bpCfg(P).rad.type) pn += pnOf(bpCfg(P).rad); });
+  return { H, C: H * tau, tau, src, pn, n, A };
+}
+function saveSim(M, To, Tc, Ts, prof) {
+  const pr = SAVE_PROF[prof] || SAVE_PROF.wohn, dt = 0.25, tm = vlFor(To) - (+S.cfg.heat.spread || 0) / 2;
+  const Pmax = T => M.pn ? (tm > T ? M.pn * Math.pow((tm - T) / 50, M.n) : 0) : 1e9;
+  const run = sched => {
+    let T = Tc, E = 0, Tmin = Tc, pre = null, late = 0;
+    for (let day = 0; day < 4; day++) {
+      const ws = day === 3 ? pr[2] : pr[1];   // letzter Tag einmal als Wochenende, Tag 2 als Werktag ausgewertet
+      let Ed = 0, mn = 99, preD = null, lateD = 0;
+      for (let h = 0; h < 24; h += dt) {
+        let set = sched ? (inWin(h, ws) ? Tc : Ts) : Tc;
+        if (sched && set === Ts) {   // Vorheizen: rechtzeitig vor dem nächsten Komfortfenster starten
+          let next = null; for (let k = dt; k <= 12; k += dt) if (inWin((h + k) % 24, ws)) { next = k; break; }
+          const need = T < Tc && next != null ? (M.C * (Tc - T)) / Math.max(1, Pmax(T) - M.H * (Tc - To)) : 0;
+          if (next != null && need >= next - dt) { set = Tc; if (preD == null) preD = h; }
+        }
+        if (sched && inWin(h, ws) && T < Tc - 0.5) lateD += dt;
+        const P = T < set ? Math.min(Pmax(T), (set - T) * M.C / dt + M.H * (T - To)) : 0;
+        T += (P - M.H * (T - To)) * dt / M.C; Ed += P * dt; mn = Math.min(mn, T);
+      }
+      if (day === 2) { E = Ed; Tmin = mn; pre = preD; late = lateD; }
+      if (day === 3) return { wd: E / 1000, we: Ed / 1000, Tmin: Math.min(Tmin, mn), pre, late };
+    }
+  };
+  const a = run(false), b = run(true);
+  const per = x => (x.wd * 5 + x.we * 2) / 7;
+  return { base: per(a), sched: per(b), Tmin: b.Tmin, pre: b.pre, late: b.late, ws: pr[1] };
+}
+const hm = h => pad(Math.floor(h)) + ':' + pad(Math.round((h % 1) * 60));
+function renderSave() {
+  const box = $('#saveList'), cfg = S.cfg.save || (S.cfg.save = {});
+  const ds = Object.keys(WX.daily).sort().slice(-7).map(k => WX.daily[k]).filter(v => v != null);
+  const To = ds.length ? ds.reduce((a, b) => a + b, 0) / ds.length : 8, k = S.en.k || 1;
+  const open = new Set($$('#saveList details[open]').map(x => x.dataset.sv));
+  let tot = 0, totB = 0;
+  const rows = roomsList().filter(R => !R.out).map(R => {
+    const M = roomModel(R.name); if (!M) return '';
+    const c = cfg[R.name] || {}, prof = c.prof || (/schlaf/i.test(R.name) ? 'schlaf' : /bad/i.test(R.name) ? 'bad' : /gäst|abstell/i.test(R.name) ? 'selten' : 'wohn');
+    const Tc = num(c.tc) ?? (prof === 'schlaf' ? 18 : prof === 'bad' ? 22 : 20), Ts = num(c.ts) ?? (prof === 'selten' ? 16 : 17);
+    const mm = mouldMinT(R.name, To), Tsafe = mm ? Math.max(Ts, Math.ceil(mm.t * 2) / 2) : Ts;
+    const r = saveSim(M, To, Tc, Math.min(Tc, Ts), prof);
+    const sv = Math.max(0, r.base - r.sched);
+    tot += sv; totB += r.base;
+    const eurT = costOf(1) != null ? ' · ' + eur(costOf(sv * 30 * k)) + '/Monat' : '';
+    const warn = !mm || r.Tmin >= mm.t ? (mm ? `<div class="hint">🍄 Schimmel: kälteste Stelle bleibt unter 80 % (Raum mind. ${fmt(mm.t, 1)} °C bei Ø ${fmt(mm.ah, 1)} g/m³) ✓</div>` : '')
+      : mm.t > Tc ? `<div class="pn" style="margin-top:6px">⚠ Schimmel: bei Ø ${fmt(mm.ah, 1)} g/m³ Luftfeuchte bräuchte die kälteste Stelle (fRsi ${fmt(mm.f, 2)}) einen Raum über ${fmt(Math.min(mm.t, 24), 1)} °C – das ist schon bei Komfort zu wenig. Hier hilft <b>Lüften/Entfeuchten</b> (Ziel unter ${fmt(mm.ah * 0.85, 1)} g/m³), nicht Heizen. Absenkung trotzdem vorsichtig: nicht unter 17 °C.</div>`
+      : `<div class="pn" style="margin-top:6px">⚠ Schimmel: mit dieser Absenkung fällt der Raum bis ${fmt(r.Tmin, 1)} °C – bei Ø ${fmt(mm.ah, 1)} g/m³ Luftfeuchte braucht die kälteste Stelle mind. <b>${fmt(mm.t, 1)} °C</b>. Absenkung auf ${fmt(Tsafe, 1)} °C begrenzen oder mehr lüften.</div>`;
+    const plan = prof === 'immer' ? `durchgehend ${fmt(Tc, 1)} °C` : prof === 'selten' ? `immer ${fmt(Ts, 1)} °C` :
+      r.ws.map(([a, b], i) => `${hm(i === 0 && r.pre != null && ((a - r.pre + 24) % 24) < 8 ? r.pre : a)} → ${fmt(Tc, 1)} °C, ${hm(b % 24)} → ${fmt(Ts, 1)} °C`).join(' · ');
+    return `<details class="cal" data-sv="${esc(R.name)}" ${open.has(R.name) ? 'open' : ''}><summary><span><b>${esc(R.name)}</b> <small>${SAVE_PROF[prof][0]}</small></span>
+      <small>${sv > 0.05 ? '−' + fmt(sv * 30 * k, 0) + ' kWh/Monat' : 'keine Ersparnis'}</small></summary>
+      <div class="f3" style="margin-top:6px"><label>Nutzung<select data-svk="prof" data-svr="${esc(R.name)}">${Object.entries(SAVE_PROF).map(([v, x]) => `<option value="${v}" ${v === prof ? 'selected' : ''}>${x[0]}</option>`).join('')}</select></label>
+        <label>Komfort °C<input type="number" step="0.5" inputmode="decimal" data-svk="tc" data-svr="${esc(R.name)}" value="${Tc}"></label>
+        <label>Absenken auf °C<input type="number" step="0.5" inputmode="decimal" data-svk="ts" data-svr="${esc(R.name)}" value="${Ts}"></label></div>
+      <div class="hint">Durchgehend ${fmt(Tc, 1)} °C: ≈ ${fmt(r.base * k, 1)} kWh/Tag · mit Plan: ≈ ${fmt(r.sched * k, 1)} kWh/Tag → <b>−${fmt(sv * k, 1)} kWh/Tag (${fmt(r.base ? sv / r.base * 100 : 0, 0)} %)</b>${eurT}
+        <br>Raum fällt dabei bis ≈ <b>${fmt(r.Tmin, 1)} °C</b> (Zeitkonstante ≈ ${fmt(M.tau, 0)} h)${r.pre != null && prof !== 'selten' ? ` · vorheizen ab ≈ ${hm(r.pre)}` : ''}${r.late > 0.25 ? ` · ⚠ Heizkörper schafft das Aufheizen nicht rechtzeitig (${fmt(r.late, 1)} h zu kühl)` : ''}
+        <br>Vorschlag Werktag: ${plan}
+        <br><span style="opacity:.7">Verlust ${fmt(M.H, 0)} W/K aus ${M.src}${M.pn ? ` · Heizkörper ${fmt(M.pn, 0)} W (Norm)` : ''}</span></div>${warn}
+    </details>`;
+  }).join('');
+  box.innerHTML = rows || '<div class="hint">Noch keine Räume mit Bauphysik-Angaben oder Abkühltest.</div>';
+  $('#saveSum').innerHTML = totB ? `<div class="pn" style="margin-bottom:8px">Bei Ø ${fmt(To, 1)} °C außen (letzte 7 Tage): mit diesen Zeitplänen ≈ <b>${fmt(tot * 30 * k, 0)} kWh/Monat weniger</b> (${fmt(tot / totB * 100, 0)} %)${costOf(1) != null ? ' ≈ <b>' + eur(costOf(tot * 30 * k)) + '/Monat</b>' : ''}. Pro Raum aufklappen und Nutzung, Komfort- und Absenktemperatur anpassen.${S.cfg.coolLast ? '' : ' <br><span class="hint">Genauer wird es nach dem Abkühltest (Urlaub/Heizpause ≥ 2 Tage).</span>'}</div>` : '';
+}
+
 /* ---------- Abkühltest: Heizpausen finden und Auskühlung auswerten ----------
  * Modell je Raum:  dTi/dt = (To − Ti)/τ + g     (τ = C/H Zeitkonstante, g = Fremdwärme in K/h)
  * Wohnung gesamt mit Wärmezähler:  H_Zähler aus kWh je Gradtag → C = τ·H → je Raum H_gemessen = C/m² · A / τ
@@ -2722,12 +2843,12 @@ function coolPauses() {
   return out.filter(p => p.b - p.a >= 12 * 36e5).concat(man).sort((x, y) => (y.b - y.a) - (x.b - x.a));
 }
 function coolFit(series, toF, a, b) {   // series(t) → Ti; Regression y = k·x + g mit x = To − Ti, y = dTi/dt
-  const xs = [], ys = [], st = 36e5, s0 = a + 2 * st;   // erste 2 h: Heizkörper kühlen noch aus
+  const xs = [], ys = [], st = 36e5, s0 = a + 6 * st;   // erste 6 h: Heizkörper und Raumluft kühlen schnell ab, die Wände noch nicht
   for (let t = s0; t + st <= b; t += st) {
     const T1 = series(t), T2 = series(t + st), To = toF(t + st / 2); if (T1 == null || T2 == null || To == null) continue;
     xs.push(To - (T1 + T2) / 2); ys.push(T2 - T1);
   }
-  if (xs.length < 8) return null;
+  if (xs.length < 12) return null;
   const n = xs.length, mx = xs.reduce((p, v) => p + v, 0) / n, my = ys.reduce((p, v) => p + v, 0) / n;
   const sxx = xs.reduce((p, v) => p + (v - mx) ** 2, 0), sxy = xs.reduce((p, v, i) => p + (v - mx) * (ys[i] - my), 0);
   if (sxx < 1) return null;
@@ -2735,7 +2856,8 @@ function coolFit(series, toF, a, b) {   // series(t) → Ti; Regression y = k·x
   // zu wenig Spreizung im Abstand → nur über den Mittelwert ohne Fremdwärme schätzen
   if (!(k > 0.002 && k < 0.5)) { k = mx < -1 ? Math.max(0.002, -my / -mx) : null; g = 0; if (!k) return null; }
   const T0 = series(s0), Te = series(b);
-  return { tau: 1 / k, g, n, drop: T0 != null && Te != null ? T0 - Te : null, dTavg: -mx, rate: my };
+  const tau = 1 / k;
+  return { tau, g, n, ok: tau >= 10 && tau <= 400 && g * tau < 12, drop: T0 != null && Te != null ? T0 - Te : null, dTavg: -mx, rate: my };
 }
 function coolCalc(P) {
   const rooms = roomsList().filter(R => !R.out), res = { P, rooms: [] };
@@ -2748,7 +2870,10 @@ function coolCalc(P) {
   res.A = At;
   // Zähler: Verbrauch in der Pause (nur wenn Ablesungen nah an Anfang/Ende) und Kennwert H
   const rd = meterRd(), near = t => rd.reduce((b, r) => Math.abs(r[0] - t) < 6 * 36e5 && (!b || Math.abs(r[0] - t) < Math.abs(b[0] - t)) ? r : b, null);
-  const ra = near(P.a), rb = near(P.b); if (ra && rb && rb[0] > ra[0]) res.meterKwh = rb[1] - ra[1];
+  let ra = near(P.a), rb = near(P.b);
+  const inside = rd.filter(r => r[0] >= P.a - 6 * 36e5 && r[0] <= P.b + 6 * 36e5);
+  if (!(ra && rb && rb[0] > ra[0]) && inside.length >= 2) { ra = inside[0]; rb = inside[inside.length - 1]; }
+  if (ra && rb && rb[0] - ra[0] >= 6 * 36e5) { res.meterKwh = rb[1] - ra[1]; res.meterH = (rb[0] - ra[0]) / 36e5; }
   const kg = kgtNow(); if (kg && kg.src === 'meter') res.Hm = kg.v * 1000 / 24;   // W/K (inkl. Gewinne → eher etwas zu niedrig)
   if (res.flat && res.Hm) { res.C = res.flat.tau * res.Hm; res.cm2 = At ? res.C / At : null; }
   res.rooms.forEach(r => {
@@ -2769,16 +2894,22 @@ function renderCool() {
   }
   const P = ps[0], R = coolCalc(P);
   const hrs = (P.b - P.a) / 36e5, rows = R.rooms.slice().sort((a, b) => a.tau - b.tau);
+  const running = Date.now() - P.b < 2 * 36e5;
+  if (hrs < 24) {
+    box.innerHTML = `<div class="pn">⏳ Heizpause ${running ? 'läuft' : 'erkannt'} seit <b>${fmtTime(P.a, true)}</b> (${fmt(hrs, 0)} h). Erste Werte ab 24 h, belastbar ab 48 h – in den ersten Stunden kühlt vor allem die Luft schnell ab, die Wände kaum, das täuscht.
+      <br>Jetzt am besten den <b>Zähler ablesen</b> und am Ende der Pause noch einmal.${R.Hm ? `<br><br>Unabhängig von der Pause, aus deinen Zählerablesungen: Wohnung verliert ≈ <b>${fmt(R.Hm, 0)} W/K</b>, deine Bauphysik-Angaben ergeben zusammen ${fmt(R.rooms.reduce((a, r) => a + (r.Hbp || 0), 0) || 0, 0)} W/K.` : ''}</div>`;
+    return;
+  }
   const per15 = r => 15 / r.tau * 24;   // K pro Tag bei 15 K Unterschied
   const Hbp = R.rooms.reduce((a, r) => a + (r.Hbp || 0), 0);
-  box.innerHTML = `<div class="pn">Heizpause ${P.man ? '(von Hand) ' : ''}<b>${fmtTime(P.a, true)} – ${fmtTime(P.b, true)}</b> · ${fmt(hrs, 0)} h${R.meterKwh != null ? ` · Zähler in der Pause: <b>${fmt(R.meterKwh, 1)} kWh</b>${R.meterKwh > 1 ? ' (es lief trotzdem Wärme – Rohre, nicht ganz zu, Nachbarstrang?)' : ' ✓'}` : ' · für den Zählerverbrauch in der Pause: am Anfang und Ende ablesen'}
+  box.innerHTML = `<div class="pn">Heizpause ${P.man ? '(von Hand) ' : ''}<b>${fmtTime(P.a, true)} – ${fmtTime(P.b, true)}</b> · ${fmt(hrs, 0)} h${R.meterKwh != null ? ` · Zähler in ${fmt(R.meterH, 0)} h der Pause: <b>${fmt(R.meterKwh, 1)} kWh</b>${R.meterKwh > 1 ? ' (es lief trotzdem Wärme – Rohre, nicht ganz zu, Nachbarstrang?)' : ' ✓'}` : ' · für den Zählerverbrauch in der Pause: am Anfang und Ende ablesen'}
     ${R.flat ? `<br>Wohnung: Zeitkonstante <b>τ ≈ ${fmt(R.flat.tau, 0)} h</b> – ohne Heizung kühlt sie bei 15 K Unterschied nach außen um ≈ ${fmt(per15(R.flat), 1)} K pro Tag aus` : ''}
     ${R.C ? `<br>Mit dem Zähler (${fmt(R.Hm, 0)} W/K): Wärmespeicher ≈ ${fmt(R.C / 1000, 1)} kWh/K (${fmt(R.cm2, 0)} Wh/K·m²) · Bauphysik-Angaben zusammen ${fmt(Hbp, 0)} W/K → ${Hbp ? (R.Hm > Hbp * 1.15 ? `tatsächlich <b>${fmt((R.Hm / Hbp - 1) * 100, 0)} % mehr Verlust</b> als angenommen` : R.Hm < Hbp * 0.85 ? `tatsächlich ${fmt((1 - R.Hm / Hbp) * 100, 0)} % weniger Verlust als angenommen` : 'passt gut') : ''}` : '<br><span class="hint">Für Watt-Werte je Raum braucht es Zählerablesungen aus Heizzeiten (Kennwert kWh je Gradtag).</span>'}</div>
     <div class="tw" style="margin-top:8px"><table><tr><th>Raum</th><th class="n">τ h</th><th class="n">K/Tag*</th><th class="n">gemessen W/K</th><th class="n">Bauphysik W/K</th><th class="n">Fremdwärme</th></tr>
-    ${rows.map(r => `<tr><td>${esc(r.name)}</td><td class="n">${fmt(r.tau, 0)}</td><td class="n">${fmt(per15(r), 1)}</td><td class="n">${r.Hmeas ? fmt(r.Hmeas, 0) : '–'}</td>
+    ${rows.map(r => `<tr style="${r.ok ? '' : 'opacity:.5'}"><td>${esc(r.name)}${r.ok ? '' : ' <small title="unplausibel – Raum wird von außen warm gehalten oder Messung zu kurz">?</small>'}</td><td class="n">${fmt(r.tau, 0)}</td><td class="n">${fmt(per15(r), 1)}</td><td class="n">${r.Hmeas ? fmt(r.Hmeas, 0) : '–'}</td>
       <td class="n">${r.Hbp ? fmt(r.Hbp, 0) : '–'}${r.Hmeas && r.Hbp ? ` <small style="color:${r.Hmeas > r.Hbp * 1.3 ? 'var(--bad, #ef4444)' : r.Hmeas < r.Hbp * 0.7 ? 'var(--acc)' : 'var(--mute)'}">${r.Hmeas > r.Hbp * 1.3 ? '▲ mehr' : r.Hmeas < r.Hbp * 0.7 ? '▼ weniger' : '≈'}</small>` : ''}</td>
       <td class="n">${r.qf ? '≈ ' + fmt(r.qf, 0) + ' W' : r.g > 0.02 ? '+' + fmt(r.g, 2) + ' K/h' : '–'}</td></tr>`).join('')}</table></div>
-    <div class="hint" style="margin-top:6px">* Auskühlung pro Tag bei 15 K Unterschied innen/außen. Kleines τ = kühlt schnell aus (viel Verlust oder wenig Masse). „Gemessen W/K“ setzt für alle Räume denselben Wärmespeicher je m² an. Fremdwärme = was der Raum ohne eigene Heizung trotzdem bekommt (Nachbarräume, Rohre, Nachbarwohnung, Sonne). ${ps.length > 1 ? `Weitere Pausen im Zeitraum: ${ps.length - 1}.` : ''}</div>`;
+    <div class="hint" style="margin-top:6px">Grau mit „?“ = unplausibel (Raum kühlt kaum, weil er von Nachbarräumen/Rohren warm gehalten wird, oder zu wenig Messzeit). * Auskühlung pro Tag bei 15 K Unterschied innen/außen. Kleines τ = kühlt schnell aus (viel Verlust oder wenig Masse). „Gemessen W/K“ setzt für alle Räume denselben Wärmespeicher je m² an. Fremdwärme = was der Raum ohne eigene Heizung trotzdem bekommt (Nachbarräume, Rohre, Nachbarwohnung, Sonne). ${ps.length > 1 ? `Weitere Pausen im Zeitraum: ${ps.length - 1}.` : ''}</div>`;
   // Ergebnis merken, damit es auch bei kürzerem Zeitraum sichtbar bleibt
   if (R.flat && hrs >= 24 && (!S.cfg.coolLast || S.cfg.coolLast.a !== P.a || Math.abs(S.cfg.coolLast.b - P.b) > 36e5)) {
     S.cfg.coolLast = { a: P.a, b: P.b, tau: R.flat.tau, Hm: R.Hm || null, Hbp, rooms: Object.fromEntries(rows.map(r => [r.name, { tau: Math.round(r.tau), H: r.Hmeas ? Math.round(r.Hmeas) : null }])) };
@@ -4100,6 +4231,12 @@ $('#manList').addEventListener('change', async e => {
   await addTi(sel.dataset.mant, Date.now(), sel.value);
   renderManual(); if (S.tab === 'en') renderEnergy();
 });
+$('#saveList').addEventListener('change', e => {
+  const t = e.target; if (!t.dataset.svk) return;
+  const c = (S.cfg.save || (S.cfg.save = {}))[t.dataset.svr] || (S.cfg.save[t.dataset.svr] = {});
+  c[t.dataset.svk] = t.dataset.svk === 'prof' ? t.value : num(t.value);
+  markDirty(); renderSave();
+});
 $('#coolAdd').addEventListener('click', () => {
   const a = new Date($('#coolFrom').value).getTime(), b = new Date($('#coolTo').value).getTime();
   if (!(b > a)) { toast('Bitte von und bis eintragen'); return; }
@@ -4415,7 +4552,7 @@ function demoData(days) {
 load();
 </script>
 <script>
-window.APP_VERSION = 'heizung-v27';
+window.APP_VERSION = 'heizung-v29';
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
   let reloaded = false;
